@@ -10,8 +10,8 @@
  </div>
 
 ---
-_Natively is a **free, open-source, privacy-first AI assistant** designed to help you  
-**in real time during live meetings, interviews, presentations, and conversations**._
+> Natively is a **free, open-source, privacy-first AI assistant** designed to help you **in real time during meetings, interviews, presentations, and conversations**.
+
 
 Unlike traditional AI tools that work *after* the conversation, Natively works **while the conversation is happening**. It runs as an **invisible, always-on-top desktop overlay**, listens when you want it to, sees what’s on your screen, and delivers **instant, context-aware assistance**.
 
