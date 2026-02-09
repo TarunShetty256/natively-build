@@ -6,11 +6,8 @@
   ![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
   ![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Windows-lightgrey)
   ![Status](https://img.shields.io/badge/status-active-success)
-</div>
-  <p align="center">
-    A privacy-first, open-source desktop AI assistant that helps you in real time during live meetings and conversations.
-  </p>
-</div>
+**Natively** is a **privacy-first, open-source desktop AI assistant** that works **in real time during meetings, interviews, presentations, exams, and professional conversations**.
+
 Natively is a **free, open-source, privacy-first AI assistant** designed to help you **in real time during live meetings, interviews, presentations, and conversations**.
 
 Unlike traditional AI tools that work *after* the conversation, Natively works **while the conversation is happening**. It runs as an **invisible, always-on-top desktop overlay**, listens when you want it to, sees what’s on your screen, and delivers **instant, context-aware assistance**.
