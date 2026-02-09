@@ -8,7 +8,7 @@
   ![GitHub all releases](https://img.shields.io/github/downloads/evinjohnn/natively-cluely-ai-assistant/total)
   ![Repo Views](https://img.shields.io/badge/views-12k-lightgrey)
   ![Status](https://img.shields.io/badge/status-active-success)
-  [![Stars](https://img.shields.io/github/stars/evinjohnn/natively-cluely-ai-assistant?style=flat-square)](https://github.com/evinjohnn/natively-cluely-ai-assistant)
+  [![Stars](https://img.shields.io/github/stars/evinjohnn/natively-cluely-ai-assistant?style=flat)](https://github.com/evinjohnn/natively-cluely-ai-assistant)
 
 
 
