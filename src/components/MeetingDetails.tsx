@@ -409,7 +409,43 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                                 </div>
                                                 <div>
                                                     <div className="text-[11px] text-text-tertiary mb-1.5 font-medium">{formatTime(interaction.timestamp)}</div>
-                                                    <p className="text-text-secondary text-[15px] leading-relaxed whitespace-pre-wrap">{interaction.answer}</p>
+                                                    <div className="text-text-secondary text-[15px] leading-relaxed prose prose-sm dark:prose-invert max-w-none">
+                                                        <ReactMarkdown
+                                                            remarkPlugins={[remarkGfm]}
+                                                            components={{
+                                                                h1: ({ node, ...props }) => <h1 className="text-xl font-bold text-text-primary mt-4 mb-2" {...props} />,
+                                                                h2: ({ node, ...props }) => <h2 className="text-lg font-semibold text-text-primary mt-4 mb-2" {...props} />,
+                                                                h3: ({ node, ...props }) => <h3 className="text-base font-semibold text-text-primary mt-3 mb-1" {...props} />,
+                                                                p: ({ node, ...props }) => <p className="text-sm text-text-secondary leading-relaxed mb-2" {...props} />,
+                                                                ul: ({ node, ...props }) => <ul className="list-disc ml-4 mb-2 space-y-1" {...props} />,
+                                                                ol: ({ node, ...props }) => <ol className="list-decimal ml-4 mb-2 space-y-1" {...props} />,
+                                                                li: ({ node, ...props }) => <li className="text-sm text-text-secondary" {...props} />,
+                                                                strong: ({ node, ...props }) => <strong className="font-semibold text-text-primary" {...props} />,
+                                                                a: ({ node, ...props }) => <a className="text-blue-500 hover:underline" {...props} />,
+                                                                code: ({ node, className, children, ...props }) => {
+                                                                    const match = /language-(\w+)/.exec(className || '')
+                                                                    return match ? (
+                                                                        <div className="rounded-md overflow-hidden my-2 border border-border-subtle bg-bg-tertiary">
+                                                                            <div className="bg-bg-tertiary px-3 py-1 text-xs font-mono text-text-tertiary border-b border-border-subtle flex justify-between items-center">
+                                                                                <span>{match[1]}</span>
+                                                                            </div>
+                                                                            <div className="p-3 overflow-x-auto">
+                                                                                <code className={`${className} text-xs font-mono`} {...props}>
+                                                                                    {children}
+                                                                                </code>
+                                                                            </div>
+                                                                        </div>
+                                                                    ) : (
+                                                                        <code className="bg-bg-tertiary px-1.5 py-0.5 rounded text-xs font-mono text-text-primary border border-border-subtle" {...props}>
+                                                                            {children}
+                                                                        </code>
+                                                                    )
+                                                                }
+                                                            }}
+                                                        >
+                                                            {interaction.answer}
+                                                        </ReactMarkdown>
+                                                    </div>
                                                 </div>
                                             </div>
                                         )}

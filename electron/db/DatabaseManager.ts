@@ -58,6 +58,22 @@ export class DatabaseManager {
             const dir = path.dirname(this.dbPath);
             if (!fs.existsSync(dir)) {
                 fs.mkdirSync(dir, { recursive: true });
+                console.log(`[DatabaseManager] Created directory: ${dir}`);
+            } else {
+                console.log(`[DatabaseManager] Directory exists: ${dir}`);
+                try {
+                    const files = fs.readdirSync(dir);
+                    console.log(`[DatabaseManager] Directory contents:`, files);
+                    const dbExists = fs.existsSync(this.dbPath);
+                    if (dbExists) {
+                        const stats = fs.statSync(this.dbPath);
+                        console.log(`[DatabaseManager] Found existing DB. Size: ${stats.size} bytes`);
+                    } else {
+                        console.log(`[DatabaseManager] No existing DB found at ${this.dbPath}. Creating new one.`);
+                    }
+                } catch (e) {
+                    console.error('[DatabaseManager] Error checking directory/file:', e);
+                }
             }
 
             this.db = new Database(this.dbPath);

@@ -16,6 +16,35 @@ export function initializeIpcHandlers(appState: AppState): void {
     ipcMain.handle(channel, listener);
   };
 
+  // --- NEW Test Helper ---
+  safeHandle("test-release-fetch", async () => {
+    try {
+      console.log("[IPC] Manual Test Fetch triggered (forcing refresh)...");
+      const { ReleaseNotesManager } = require('./update/ReleaseNotesManager');
+      const notes = await ReleaseNotesManager.getInstance().fetchReleaseNotes('latest', true);
+
+      if (notes) {
+        console.log("[IPC] Notes fetched for:", notes.version);
+        const info = {
+          version: notes.version || 'latest',
+          files: [] as any[],
+          path: '',
+          sha512: '',
+          releaseName: notes.summary,
+          releaseNotes: notes.fullBody,
+          parsedNotes: notes
+        };
+        // Send to renderer
+        appState.getMainWindow()?.webContents.send("update-available", info);
+        return { success: true };
+      }
+      return { success: false, error: "No notes returned" };
+    } catch (err: any) {
+      console.error("[IPC] test-release-fetch failed:", err);
+      return { success: false, error: err.message };
+    }
+  });
+
   safeHandle("get-recognition-languages", async () => {
     return ENGLISH_VARIANTS;
   });

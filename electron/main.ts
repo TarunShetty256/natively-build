@@ -72,6 +72,7 @@ import { ThemeManager } from "./ThemeManager"
 import { RAGManager } from "./rag/RAGManager"
 import { DatabaseManager } from "./db/DatabaseManager"
 import { CredentialsManager } from "./services/CredentialsManager"
+import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 
 export class AppState {
   private static instance: AppState | null = null
@@ -192,11 +193,19 @@ export class AppState {
       this.getMainWindow()?.webContents.send("update-checking")
     })
 
-    autoUpdater.on("update-available", (info) => {
+    autoUpdater.on("update-available", async (info) => {
       console.log("[AutoUpdater] Update available:", info.version)
       this.updateAvailable = true
-      // Notify renderer that an update is available (for optional UI signal)
-      this.getMainWindow()?.webContents.send("update-available", info)
+
+      // Fetch structured release notes
+      const releaseManager = ReleaseNotesManager.getInstance();
+      const notes = await releaseManager.fetchReleaseNotes(info.version);
+
+      // Notify renderer that an update is available with parsed notes if available
+      this.getMainWindow()?.webContents.send("update-available", {
+        ...info,
+        parsedNotes: notes
+      })
     })
 
     autoUpdater.on("update-not-available", (info) => {

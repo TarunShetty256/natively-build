@@ -145,6 +145,7 @@ interface ElectronAPI {
   restartAndInstall: () => Promise<void>
   checkForUpdates: () => Promise<void>
   downloadUpdate: () => Promise<void>
+  testReleaseFetch: () => Promise<{ success: boolean; error?: string }>
 
   // RAG (Retrieval-Augmented Generation) API
   ragQueryMeeting: (meetingId: string, query: string) => Promise<{ success?: boolean; fallback?: boolean; error?: string }>
@@ -670,6 +671,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   restartAndInstall: () => ipcRenderer.invoke("quit-and-install-update"),
   checkForUpdates: () => ipcRenderer.invoke("check-for-updates"),
   downloadUpdate: () => ipcRenderer.invoke("download-update"),
+  testReleaseFetch: () => ipcRenderer.invoke("test-release-fetch"),
 
   // RAG API
   ragQueryMeeting: (meetingId: string, query: string) => ipcRenderer.invoke('rag:query-meeting', { meetingId, query }),

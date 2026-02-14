@@ -1,135 +1,97 @@
 import React, { useEffect, useState } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
-import { RefreshCw } from 'lucide-react';
+import UpdateModal from './UpdateModal';
 
 const UpdateBanner: React.FC = () => {
     const [updateInfo, setUpdateInfo] = useState<any>(null);
+    const [parsedNotes, setParsedNotes] = useState<any>(null);
     const [isVisible, setIsVisible] = useState(false);
     const [downloadProgress, setDownloadProgress] = useState(0);
     const [status, setStatus] = useState<'idle' | 'downloading' | 'ready'>('idle');
 
     useEffect(() => {
+        // Listen for update available
+        const unsubAvailable = window.electronAPI.onUpdateAvailable((info: any) => {
+            console.log('[UpdateBanner] Update available:', info);
+            setUpdateInfo(info);
+            // If parsed notes are included in the info object (from our backend change)
+            if (info.parsedNotes) {
+                setParsedNotes(info.parsedNotes);
+            }
+            setIsVisible(true);
+        });
+
         // Listen for download progress
         const unsubProgress = window.electronAPI.onDownloadProgress((progressObj) => {
-            setIsVisible(true);
+            // Ensure modal is visible if download starts
+            if (!isVisible) setIsVisible(true);
             setStatus('downloading');
             setDownloadProgress(progressObj.percent);
         });
 
         // Listen for update-downloaded event
         const unsubDownloaded = window.electronAPI.onUpdateDownloaded((info) => {
-            console.log('[UpdateBanner] Update ready:', info);
-            setUpdateInfo(info);
+            console.log('[UpdateBanner] Update downloaded:', info);
+            setUpdateInfo(info); // Update info again just in case
+            if (info.parsedNotes) setParsedNotes(info.parsedNotes);
+
             setStatus('ready');
             setIsVisible(true);
         });
 
         return () => {
+            unsubAvailable();
             unsubProgress();
             unsubDownloaded();
         };
-    }, []);
+    }, [isVisible]);
 
-    // Demo mode: Press Cmd+Shift+U to show the banner
+    // Demo/Test mode: Press Cmd+I to trigger backend test-fetch
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.metaKey && e.shiftKey && e.key.toLowerCase() === 'u') {
+            // The user specifically mentioned Cmd+I should be working
+            // Checking: metaKey + i (case insensitive)
+            if (e.metaKey && !e.shiftKey && e.key.toLowerCase() === 'i') {
                 e.preventDefault();
-                setUpdateInfo({ version: '1.0.2' });
-                setStatus('ready');
-                setIsVisible(true);
+                console.log("[UpdateBanner] Cmd+I pressed: Triggering Test Release Fetch...");
+
+                // Call the new test method
+                window.electronAPI.testReleaseFetch()
+                    .then(result => {
+                        if (result.success) {
+                            console.log("[UpdateBanner] Test fetch successful");
+                        } else {
+                            console.error("[UpdateBanner] Test fetch failed:", result.error);
+                        }
+                    })
+                    .catch(err => console.error("[UpdateBanner] Test fetch error:", err));
             }
         };
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, []);
 
-    const handleRestart = async () => {
-        console.log('[UpdateBanner] Restart button clicked - calling restartAndInstall...');
-        try {
-            await window.electronAPI.restartAndInstall();
-            console.log('[UpdateBanner] restartAndInstall call completed');
-        } catch (err) {
-            console.error('[UpdateBanner] restartAndInstall failed:', err);
-        }
+    const handleInstall = () => {
+        setStatus('downloading');
+        // Trigger download via IPC
+        window.electronAPI.downloadUpdate();
     };
 
     const handleDismiss = () => {
         setIsVisible(false);
     };
 
+    if (!isVisible) return null;
+
     return (
-        <AnimatePresence>
-            {isVisible && (
-                <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    transition={{ duration: 0.3, ease: "easeInOut" }}
-                    className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/20 backdrop-blur-[2px]"
-                >
-                    <motion.div
-                        initial={{ opacity: 0, scale: 0.95, y: 10, filter: "blur(10px)" }}
-                        animate={{ opacity: 1, scale: 1, y: 0, filter: "none" }}
-                        exit={{ opacity: 0, scale: 0.95, y: 10, filter: "blur(10px)" }}
-                        transition={{ type: 'spring', damping: 30, stiffness: 400, mass: 1 }}
-                        className="w-full max-w-[340px] mx-4"
-                    >
-                        <div className="relative bg-[#1e1e1eba] backdrop-filter backdrop-blur-xl saturate-[180%] border border-[#ffffff1a] rounded-[20px] shadow-[0_20px_50px_rgba(0,0,0,0.5),0_0_0_1px_rgba(0,0,0,0.2)] overflow-hidden">
-                            <div className="p-6 flex flex-col items-center text-center">
-                                {/* Subtle Icon */}
-                                <div className="mb-4 text-[#ffffffcc] opacity-90">
-                                    <RefreshCw size={26} strokeWidth={2} className={status === 'downloading' ? 'animate-spin' : ''} />
-                                </div>
-
-                                {/* Typography: Calm, sentence-case, confident */}
-                                <h3 className="text-[17px] font-semibold text-[#ffffffe6] mb-1 tracking-tight">
-                                    {status === 'downloading' ? 'Downloading Update...' : 'Update Ready'}
-                                </h3>
-
-                                {status === 'downloading' ? (
-                                    <div className="w-full mt-2 mb-4">
-                                        <div className="w-full bg-white/10 h-1.5 rounded-full overflow-hidden">
-                                            <motion.div
-                                                className="bg-accent-primary h-full rounded-full"
-                                                initial={{ width: 0 }}
-                                                animate={{ width: downloadProgress + '%' }}
-                                                transition={{ ease: "linear" }}
-                                            />
-                                        </div>
-                                        <p className="text-[11px] text-[#ffffff8a] mt-2 font-medium tabular-nums">{Math.round(downloadProgress)}%</p>
-                                    </div>
-                                ) : (
-                                    <p className="text-[13px] text-[#ffffff8a] leading-relaxed mb-6 font-medium">
-                                        A new version of Natively is ready.<br />
-                                        Install now to update.
-                                    </p>
-                                )}
-
-                                {/* Buttons: Horizontal, balanced, native feel */}
-                                {status === 'ready' && (
-                                    <div className="flex w-full gap-3">
-                                        <button
-                                            onClick={handleDismiss}
-                                            className="flex-1 py-[6px] text-[13px] font-medium text-[#ffffff99] hover:text-white hover:bg-[#ffffff10] rounded-[8px] transition-all duration-200"
-                                        >
-                                            Not now
-                                        </button>
-
-                                        <button
-                                            onClick={handleRestart}
-                                            className="flex-1 py-[6px] bg-[#0091FF]/70 hover:bg-[#0091FF] active:scale-[0.98] text-[13px] font-medium text-white rounded-[8px] transition-all duration-200 shadow-[0_1px_2px_rgba(0,0,0,0.2)]"
-                                        >
-                                            Install
-                                        </button>
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    </motion.div>
-                </motion.div>
-            )}
-        </AnimatePresence>
+        <UpdateModal
+            isOpen={isVisible}
+            updateInfo={updateInfo}
+            parsedNotes={parsedNotes}
+            onDismiss={handleDismiss}
+            onInstall={handleInstall}
+            downloadProgress={downloadProgress}
+            status={status}
+        />
     );
 };
 
