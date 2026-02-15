@@ -2,7 +2,7 @@
 
 Everyone saw the viral stunt with "Natively," the invisible app designed to secretly ace coding interviews. I tore apart the app to see how it works, and turns out, the tech itself is genuinely interesting.
 
-![Natively Screenshot](image.png)
+![Natively Screenshot](assets/dashboard-preview.png)
 
 ### How Natively Actually Works (Technical Breakdown)
 

@@ -20,11 +20,11 @@
 
 Unlike cloud-only tools, Natively uses **Local RAG (Retrieval Augmented Generation)** to remember past conversations, giving you instant answers during **technical interviews**, **sales calls**, and **daily standups**.
 
+</div>
+
 ---
 
 ## Why Natively?
-
-</div>
 
 While other tools focus on being "lightweight" wrappers, Natively is a complete intelligence system.
 
@@ -93,7 +93,6 @@ This demo shows **a complete live meeting scenario**:
 ## Table of Contents
 
 - [Why Natively?](#why-natively)
-- [Key Capabilities](#key-capabilities)
 - [Privacy & Security](#privacy--security-core-design-principle)
 - [Quick Start (End Users)](#quick-start-end-users)
 - [Installation (Developers)](#installation-developers--contributors)
@@ -129,17 +128,6 @@ It provides:
 - Instant suggestions for what to say next
 
 All while remaining **invisible, fast, and privacy-first**.
-
----
-
-## Key Capabilities
-
-- **Live Assist:** Real-time answers during meetings and interviews.
-- **Memory (RAG):** Understands what was said across current and past meetings.
-- **Multimodal:** Screenshot and screen content analysis for visual understanding.
-- **Low Latency:** Optimized real-time transcription with sub-second feedback.
-- **Global Actions:** Single keyboard shortcut for instant overlays and features.
-- **Local-First:** SQLite database and local LLM (Ollama) support for 100% privacy.
 
 ---
 
@@ -332,22 +320,15 @@ Natively understands that *listening* to a meeting and *talking* to an AI are di
 ---
 
 ## Meeting Intelligence Dashboard
-Natively includes a powerful, local-first dashboard to manage your knowledge.
+Natively includes a powerful, local-first meeting management system to review, search, and manage your entire conversation history.
 
 ![Dashboard Preview](assets/dashboard-preview.png)
 
-- **Full-Text Search:** Instantly find any topic discussed in past meetings.
-- **Token Usage & Cost:** Track exactly how much you're spending on Gemini/OpenAI keys.
-- **Export Options:** One-click export to **Markdown**, **JSON**, or **Text** for Notion/Obsidian.
-- **Audio Separation:** Distinct controls for **System Audio** (what they say) vs. **Microphone** (what you dictate).
-
-### Comprehensive Dashboard & History
-Natively isn't just an overlay; it's a complete meeting management system. Access the **Dashboard** to review, search, and manage your entire conversation history.
-
-- **Meeting Archives:** access full transcripts of every past meeting, searchable by keywords or dates.
+- **Meeting Archives:** Access full transcripts of every past meeting, searchable by keywords or dates.
 - **Smart Export:** One-click export of transcripts and AI summaries to **Markdown, JSON, or Text**—perfect for pasting into Notion, Obsidian, or Slack.
 - **Usage Statistics:** Track your token usage and API costs in real-time. Know exactly how much you are spending on Gemini, OpenAI, or Claude.
-- **Chat Management:** Rename, organize, or delete past sessions to keep your workspace clean.
+- **Audio Separation:** Distinct controls for **System Audio** (what they say) vs. **Microphone** (what you dictate).
+- **Session Management:** Rename, organize, or delete past sessions to keep your workspace clean.
 
 ---
 
