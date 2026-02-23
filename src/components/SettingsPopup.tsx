@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
-import { MessageSquare, Link, Camera, Zap, Heart } from 'lucide-react';
+import { MessageSquare, Link, Camera, Zap, Heart, User } from 'lucide-react';
 import { useShortcuts } from '../hooks/useShortcuts';
 
 const SettingsPopup = () => {
@@ -8,9 +8,61 @@ const SettingsPopup = () => {
     const [useGroqFastText, setUseGroqFastText] = useState(() => {
         return localStorage.getItem('natively_groq_fast_text') === 'true';
     });
+    const [profileMode, setProfileMode] = useState(false);
+    const [hasProfile, setHasProfile] = useState(false);
 
     const isFirstRender = React.useRef(true);
     const isFirstUndetectableRender = React.useRef(true);
+
+    const [hasStoredKey, setHasStoredKey] = useState<Record<string, boolean>>({});
+
+    // Load Initial Data
+    useEffect(() => {
+        const loadCredentials = async () => {
+            try {
+                // @ts-ignore
+                const creds = await window.electronAPI?.getStoredCredentials?.();
+                if (creds) {
+                    setHasStoredKey({
+                        gemini: creds.hasGeminiKey,
+                        groq: creds.hasGroqKey,
+                        openai: creds.hasOpenaiKey,
+                        claude: creds.hasClaudeKey
+                    });
+                }
+            } catch (e) {
+                console.error("Failed to load settings:", e);
+            }
+        };
+        loadCredentials();
+
+        // Load profile status
+        const loadProfile = async () => {
+            try {
+                // @ts-ignore
+                const status = await window.electronAPI?.profileGetStatus?.();
+                if (status) {
+                    setHasProfile(status.hasProfile);
+                    setProfileMode(status.profileMode);
+                }
+            } catch (e) { /* ignore */ }
+        };
+        loadProfile();
+    }, []);
+
+    // Effect to enforce fast mode disabled if no Groq key
+    useEffect(() => {
+        if (!isFirstRender.current && hasStoredKey.groq === false && useGroqFastText) {
+            setUseGroqFastText(false);
+            localStorage.setItem('natively_groq_fast_text', 'false');
+            try {
+                // @ts-ignore
+                window.electronAPI?.invoke('set-groq-fast-text-mode', false);
+            } catch (e) {
+                console.error(e);
+            }
+        }
+    }, [hasStoredKey.groq, useGroqFastText]);
 
     // Sync with global state changes
     useEffect(() => {
@@ -141,7 +193,7 @@ const SettingsPopup = () => {
 
 
                 {/* Groq (Fast Text) Toggle */}
-                <div className="flex items-center justify-between px-3 py-2 hover:bg-white/5 rounded-lg transition-colors duration-200 group cursor-default">
+                <div className={`flex items-center justify-between px-3 py-2 rounded-lg transition-colors duration-200 group ${hasStoredKey.groq === false ? 'opacity-50 grayscale cursor-not-allowed' : 'hover:bg-white/5 cursor-default'}`} title={hasStoredKey.groq === false ? "Requires Groq API Key to be configured in Settings" : ""}>
                     <div className="flex items-center gap-3">
                         <Zap
                             className={`w-4 h-4 transition-colors ${useGroqFastText ? 'text-orange-500' : 'text-slate-500 group-hover:text-slate-300'}`}
@@ -150,8 +202,12 @@ const SettingsPopup = () => {
                         <span className={`text-[12px] font-medium transition-colors ${useGroqFastText ? 'text-white' : 'text-slate-400 group-hover:text-slate-200'}`}>Fast Response</span>
                     </div>
                     <button
-                        onClick={() => setUseGroqFastText(!useGroqFastText)}
+                        onClick={() => {
+                            if (hasStoredKey.groq === false) return; // Prevent clicking
+                            setUseGroqFastText(!useGroqFastText);
+                        }}
                         className={`w-[30px] h-[18px] rounded-full p-[1.5px] transition-all duration-300 ease-spring active:scale-[0.92] ${useGroqFastText ? 'bg-orange-500 shadow-[0_2px_10px_rgba(249,115,22,0.3)]' : 'bg-white/10'}`}
+                        disabled={hasStoredKey.groq === false}
                     >
                         <div className={`w-[15px] h-[15px] rounded-full bg-black shadow-sm transition-transform duration-300 ease-spring ${useGroqFastText ? 'translate-x-[12px]' : 'translate-x-0'}`} />
                     </button>
@@ -179,6 +235,37 @@ const SettingsPopup = () => {
                         <div className={`w-[15px] h-[15px] rounded-full bg-black shadow-sm transition-transform duration-300 ease-spring ${showTranscript ? 'translate-x-[12px]' : 'translate-x-0'}`} />
                     </button>
                 </div>
+
+                {/* Profile Mode Toggle */}
+                {hasProfile && (
+                    <div className="flex items-center justify-between px-3 py-2 hover:bg-white/5 rounded-lg transition-colors duration-200 group cursor-default">
+                        <div className="flex items-center gap-3">
+                            <div className={`relative flex items-center justify-center w-4 h-4 rounded-full transition-all duration-300 ${profileMode ? 'bg-purple-500/20 shadow-[0_0_8px_rgba(168,85,247,0.4)]' : ''}`}>
+                                <User
+                                    className={`w-3.5 h-3.5 transition-all duration-300 ${profileMode ? 'text-purple-400 scale-110 drop-shadow-[0_0_3px_rgba(168,85,247,0.8)]' : 'text-slate-500 group-hover:text-slate-300'}`}
+                                    fill={profileMode ? "currentColor" : "none"}
+                                />
+                            </div>
+                            <span className={`text-[12px] font-medium transition-colors ${profileMode ? 'text-white drop-shadow-[0_0_8px_rgba(255,255,255,0.3)]' : 'text-slate-400 group-hover:text-slate-200'}`}>Profile Mode</span>
+                        </div>
+                        <button
+                            onClick={async () => {
+                                const newState = !profileMode;
+                                setProfileMode(newState);
+                                try {
+                                    // @ts-ignore
+                                    await window.electronAPI?.profileSetMode?.(newState);
+                                } catch (e) { console.error(e); }
+                            }}
+                            className={`w-[32px] h-[18px] rounded-full p-[1.5px] transition-all duration-300 ease-spring active:scale-[0.92] relative overflow-hidden ${profileMode ? 'bg-gradient-to-r from-purple-500 to-indigo-500 shadow-[0_0_12px_rgba(168,85,247,0.4)] border border-purple-400/30' : 'bg-white/10 hover:bg-white/15'}`}
+                        >
+                            {profileMode && <div className="absolute inset-0 bg-white/20 blur-[2px] rounded-full animate-pulse z-0"></div>}
+                            <div className={`w-[13px] h-[13px] rounded-full bg-white shadow-sm transition-transform duration-300 ease-spring relative z-10 flex items-center justify-center ${profileMode ? 'translate-x-[14px]' : 'translate-x-0 opacity-80'}`} >
+                                {profileMode && <div className="w-1.5 h-1.5 rounded-full bg-purple-600 shadow-[0_0_4px_rgba(168,85,247,0.8)]" />}
+                            </div>
+                        </button>
+                    </div>
+                )}
 
                 <div className="h-px bg-white/[0.04] my-0.5 mx-2" />
 

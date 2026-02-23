@@ -232,6 +232,18 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose }) =>
     const [updateStatus, setUpdateStatus] = useState<'idle' | 'checking' | 'available' | 'uptodate' | 'error'>('idle');
     const themeDropdownRef = React.useRef<HTMLDivElement>(null);
 
+    // Profile Engine State
+    const [profileStatus, setProfileStatus] = useState<{
+        hasProfile: boolean;
+        profileMode: boolean;
+        name?: string;
+        role?: string;
+        totalExperienceYears?: number;
+    }>({ hasProfile: false, profileMode: false });
+    const [profileUploading, setProfileUploading] = useState(false);
+    const [profileError, setProfileError] = useState('');
+    const [profileData, setProfileData] = useState<any>(null);
+
     // Close dropdown when clicking outside
     // Sync with global state changes
     useEffect(() => {
@@ -894,6 +906,17 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose }) =>
                                     >
                                         <Keyboard size={16} /> Keybinds
                                     </button>
+                                    <button
+                                        onClick={() => {
+                                            setActiveTab('profile');
+                                            // Load profile status when switching to this tab
+                                            window.electronAPI?.profileGetStatus?.().then(setProfileStatus).catch(() => { });
+                                            window.electronAPI?.profileGetProfile?.().then(setProfileData).catch(() => { });
+                                        }}
+                                        className={`w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-colors flex items-center gap-3 ${activeTab === 'profile' ? 'bg-bg-item-active text-text-primary' : 'text-text-secondary hover:text-text-primary hover:bg-bg-item-active/50'}`}
+                                    >
+                                        <User size={16} /> Profile
+                                    </button>
 
                                     <button
                                         onClick={() => setActiveTab('about')}
@@ -1187,6 +1210,267 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose }) =>
                                         </div>
                                     </div>
 
+                                </div>
+                            )}
+                            {activeTab === 'profile' && (
+                                <div className="space-y-6 animated fadeIn">
+                                    <div>
+                                        <h3 className="text-lg font-bold text-text-primary mb-1 flex items-center gap-2">
+                                            Resume Profile Engine
+                                            <span className="px-2 py-0.5 rounded-full bg-purple-500/10 border border-purple-500/20 text-purple-400 text-[10px] uppercase tracking-wider font-bold">Beta</span>
+                                        </h3>
+                                        <p className="text-xs text-text-secondary leading-relaxed">Upload your resume to enable persona-aware AI responses. When Profile Mode is ON, the AI answers as you in first person, integrating your real experience seamlessly.</p>
+                                    </div>
+
+                                    {/* Profile Mode Toggle */}
+                                    <div className={`relative overflow-hidden rounded-xl p-[1px] transition-all duration-300 ${profileStatus.profileMode ? 'bg-gradient-to-r from-purple-500 via-indigo-500 to-purple-500 shadow-lg shadow-purple-500/20' : 'bg-border-subtle hover:bg-border-muted'}`}>
+                                        <div className="absolute inset-0 bg-gradient-to-r from-purple-500/20 via-indigo-500/20 to-purple-500/20 opacity-0 transition-opacity duration-500 hover:opacity-100 mix-blend-overlay"></div>
+                                        <div className="bg-bg-item-surface rounded-[10px] p-5 relative z-10 flex items-center justify-between h-full">
+                                            <div className="flex items-center gap-4">
+                                                <div className="relative">
+                                                    <div className={`absolute inset-0 bg-purple-500/30 blur-md rounded-full transition-opacity duration-300 ${profileStatus.profileMode ? 'opacity-100' : 'opacity-0'}`}></div>
+                                                    <div className={`w-11 h-11 rounded-xl flex items-center justify-center relative z-10 transition-all duration-500 shadow-sm ${profileStatus.profileMode ? 'bg-gradient-to-br from-purple-500 to-indigo-600 shadow-purple-500/30 text-white scale-105' : 'bg-bg-input border border-border-subtle text-text-tertiary'}`}>
+                                                        <User size={20} className={profileStatus.profileMode ? 'drop-shadow-md' : ''} />
+                                                    </div>
+                                                </div>
+                                                <div>
+                                                    <h3 className={`text-[15px] font-bold transition-colors ${profileStatus.profileMode ? 'text-white' : 'text-text-primary'}`}>Profile Mode</h3>
+                                                    <p className={`text-xs mt-0.5 transition-colors ${profileStatus.profileMode ? 'text-purple-200' : 'text-text-secondary'}`}>
+                                                        {profileStatus.hasProfile
+                                                            ? (profileStatus.profileMode ? 'AI is answering as you with full context' : 'Enable to have AI answer using your persona')
+                                                            : 'Upload a resume first to unlock AI persona capabilities'
+                                                        }
+                                                    </p>
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={async () => {
+                                                    if (!profileStatus.hasProfile) return;
+                                                    const newState = !profileStatus.profileMode;
+                                                    try {
+                                                        await window.electronAPI?.profileSetMode?.(newState);
+                                                        setProfileStatus(prev => ({ ...prev, profileMode: newState }));
+                                                    } catch (e) { console.error('Failed to toggle profile mode:', e); }
+                                                }}
+                                                disabled={!profileStatus.hasProfile}
+                                                className={`w-12 h-6 rounded-full relative transition-all duration-300 shrink-0 outline-none focus:ring-2 focus:ring-purple-500/50 ${!profileStatus.hasProfile ? 'opacity-40 cursor-not-allowed bg-bg-input border border-border-subtle' : profileStatus.profileMode ? 'bg-white shadow-[0_0_15px_rgba(255,255,255,0.3)]' : 'bg-bg-input hover:bg-bg-elevated border border-border-muted cursor-pointer'}`}
+                                            >
+                                                <div className={`absolute top-[2px] left-[2px] w-[20px] h-[20px] rounded-full transition-all duration-300 shadow-sm flex items-center justify-center ${profileStatus.profileMode ? 'translate-x-6 bg-purple-600 scale-105' : 'translate-x-0 bg-text-tertiary'}`}>
+                                                    {profileStatus.profileMode && <Sparkles size={10} className="text-white absolute" />}
+                                                </div>
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* Profile Status Card */}
+                                    <AnimatePresence>
+                                        {profileStatus.hasProfile && profileData && (
+                                            <motion.div
+                                                initial={{ opacity: 0, y: 10 }}
+                                                animate={{ opacity: 1, y: 0 }}
+                                                exit={{ opacity: 0, scale: 0.95 }}
+                                                className="bg-bg-item-surface rounded-xl border border-border-subtle overflow-hidden shadow-sm relative group"
+                                            >
+                                                {/* Ambient Background Glow */}
+                                                <div className="absolute top-0 right-0 w-64 h-64 bg-purple-500/5 rounded-full blur-3xl -z-10 group-hover:bg-purple-500/10 transition-colors duration-500"></div>
+
+                                                {/* Purple gradient header */}
+                                                <div className="bg-gradient-to-r from-purple-600/10 via-indigo-600/5 to-transparent px-6 py-5 border-b border-border-subtle/50 backdrop-blur-sm">
+                                                    <div className="flex items-center gap-5">
+                                                        {/* Avatar Initial */}
+                                                        <div className="relative">
+                                                            <div className="absolute inset-0 bg-purple-500 blur-xl opacity-20 group-hover:opacity-40 transition-opacity duration-500 rounded-full"></div>
+                                                            <div className="w-14 h-14 rounded-full bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center shadow-lg shadow-purple-500/20 shrink-0 relative z-10 border-2 border-bg-item-surface">
+                                                                <span className="text-white font-bold text-xl drop-shadow-md">
+                                                                    {(profileData.identity?.name || 'U').charAt(0).toUpperCase()}
+                                                                </span>
+                                                            </div>
+                                                        </div>
+                                                        <div className="flex-1 min-w-0">
+                                                            <h4 className="text-base font-bold text-text-primary truncate tracking-tight">{profileData.identity?.name || 'Profile Loaded'}</h4>
+                                                            {profileData.identity?.email && (
+                                                                <p className="text-xs text-text-tertiary mt-1 truncate max-w-[80%]">{profileData.identity.email}</p>
+                                                            )}
+                                                        </div>
+                                                        <button
+                                                            onClick={async () => {
+                                                                if (!confirm('Delete your profile? This will remove all parsed resume data.')) return;
+                                                                try {
+                                                                    await window.electronAPI?.profileDelete?.();
+                                                                    setProfileStatus({ hasProfile: false, profileMode: false });
+                                                                    setProfileData(null);
+                                                                } catch (e) { console.error('Failed to delete profile:', e); }
+                                                            }}
+                                                            className="shrink-0 p-2.5 rounded-xl text-text-tertiary hover:text-red-400 hover:bg-red-500/10 transition-all border border-transparent hover:border-red-500/20 active:scale-95"
+                                                            title="Delete Profile"
+                                                        >
+                                                            <Trash2 size={16} />
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                {/* Stats */}
+                                                <div className="px-6 py-5 relative z-10 backdrop-blur-sm bg-bg-item-surface/50">
+                                                    <div className="grid grid-cols-3 gap-3 mb-5">
+                                                        <div className="relative overflow-hidden group/stat text-center p-3 bg-bg-input/40 hover:bg-bg-input/80 rounded-xl border border-border-subtle/50 hover:border-purple-500/30 transition-all duration-300">
+                                                            <div className="absolute inset-0 bg-gradient-to-b from-purple-500/0 to-purple-500/5 opacity-0 group-hover/stat:opacity-100 transition-opacity duration-300"></div>
+                                                            <div className="text-xl font-black text-transparent bg-clip-text bg-gradient-to-br from-purple-400 to-purple-600 mb-0.5 transform group-hover/stat:scale-110 transition-transform duration-300">{profileData.experienceCount}</div>
+                                                            <div className="text-[10px] text-text-secondary uppercase tracking-widest font-bold">Experience</div>
+                                                        </div>
+                                                        <div className="relative overflow-hidden group/stat text-center p-3 bg-bg-input/40 hover:bg-bg-input/80 rounded-xl border border-border-subtle/50 hover:border-blue-500/30 transition-all duration-300">
+                                                            <div className="absolute inset-0 bg-gradient-to-b from-blue-500/0 to-blue-500/5 opacity-0 group-hover/stat:opacity-100 transition-opacity duration-300"></div>
+                                                            <div className="text-xl font-black text-transparent bg-clip-text bg-gradient-to-br from-blue-400 to-blue-600 mb-0.5 transform group-hover/stat:scale-110 transition-transform duration-300">{profileData.projectCount}</div>
+                                                            <div className="text-[10px] text-text-secondary uppercase tracking-widest font-bold">Projects</div>
+                                                        </div>
+                                                        <div className="relative overflow-hidden group/stat text-center p-3 bg-bg-input/40 hover:bg-bg-input/80 rounded-xl border border-border-subtle/50 hover:border-emerald-500/30 transition-all duration-300">
+                                                            <div className="absolute inset-0 bg-gradient-to-b from-emerald-500/0 to-emerald-500/5 opacity-0 group-hover/stat:opacity-100 transition-opacity duration-300"></div>
+                                                            <div className="text-xl font-black text-transparent bg-clip-text bg-gradient-to-br from-emerald-400 to-emerald-600 mb-0.5 transform group-hover/stat:scale-110 transition-transform duration-300">{profileData.nodeCount}</div>
+                                                            <div className="text-[10px] text-text-secondary uppercase tracking-widest font-bold">Nodes</div>
+                                                        </div>
+                                                    </div>
+
+                                                    {/* Skills */}
+                                                    {profileData.skills && profileData.skills.length > 0 && (
+                                                        <div>
+                                                            <div className="flex items-center gap-2 mb-3">
+                                                                <div className="h-px bg-border-subtle flex-1"></div>
+                                                                <span className="text-[10px] text-text-tertiary uppercase tracking-widest font-bold">Top Extracted Skills</span>
+                                                                <div className="h-px bg-border-subtle flex-1"></div>
+                                                            </div>
+                                                            <div className="flex flex-wrap gap-2 justify-center">
+                                                                {profileData.skills.slice(0, 15).map((skill: string, i: number) => (
+                                                                    <span key={i} className="text-[11px] font-medium bg-purple-500/5 hover:bg-purple-500/15 text-purple-300/90 hover:text-purple-300 px-2.5 py-1 rounded-md border border-purple-500/10 hover:border-purple-500/30 transition-colors cursor-default">
+                                                                        {skill}
+                                                                    </span>
+                                                                ))}
+                                                                {profileData.skills.length > 15 && (
+                                                                    <span className="text-[11px] font-medium text-text-tertiary bg-bg-input px-2.5 py-1 rounded-md border border-border-subtle">+{profileData.skills.length - 15} more</span>
+                                                                )}
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            </motion.div>
+                                        )}
+                                    </AnimatePresence>
+
+                                    {/* Upload Resume Workspace */}
+                                    <div className={`relative overflow-hidden rounded-xl bg-bg-item-surface border border-dashed transition-all duration-300 ${profileUploading ? 'border-purple-500/50 shadow-[0_0_30px_rgba(168,85,247,0.1)]' : 'border-border-muted hover:border-purple-500/30'}`}>
+                                        <div className="p-6 relative z-10 flex flex-col items-center justify-center text-center">
+                                            <div className="relative mb-4">
+                                                {profileUploading && (
+                                                    <div className="absolute inset-0 bg-purple-500 blur-xl opacity-20 rounded-full animate-pulse"></div>
+                                                )}
+                                                <div className={`w-14 h-14 rounded-2xl flex items-center justify-center relative z-10 transition-all duration-500 ${profileUploading ? 'bg-purple-500/20 text-purple-400 scale-110 shadow-lg shadow-purple-500/20' : 'bg-bg-input border border-border-subtle text-text-tertiary group-hover:bg-bg-elevated'}`}>
+                                                    {profileUploading ? <RefreshCw size={24} className="animate-spin" /> : <Upload size={24} strokeWidth={1.5} />}
+                                                </div>
+                                            </div>
+
+                                            <h4 className="text-[15px] font-bold text-text-primary mb-1">
+                                                {profileStatus.hasProfile ? 'Update Resume Source' : 'Upload Your Resume'}
+                                            </h4>
+                                            <p className="text-xs text-text-secondary max-w-[250px] mx-auto mb-5 leading-relaxed">
+                                                Drop your latest <span className="text-text-primary font-medium">PDF, DOCX, or TXT</span> here or click to browse files.
+                                            </p>
+
+                                            {profileError && (
+                                                <div className="w-full bg-red-500/10 border border-red-500/20 text-red-400 text-xs p-3 rounded-xl mb-4 flex items-center gap-2 animated fadeIn">
+                                                    <div className="w-5 h-5 rounded-full bg-red-500/20 flex items-center justify-center shrink-0"><X size={12} /></div>
+                                                    <span className="text-left flex-1">{profileError}</span>
+                                                </div>
+                                            )}
+
+                                            {/* Upload progress timeline */}
+                                            {profileUploading && (
+                                                <div className="w-full mb-5 text-left relative before:absolute before:inset-0 before:ml-[11px] before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-border-subtle before:to-transparent">
+                                                    {[
+                                                        { label: 'Reading document structure...', icon: '📄' },
+                                                        { label: 'Extracting semantic data...', icon: '🧠' },
+                                                        { label: 'Building context graph...', icon: '🔗' },
+                                                        { label: 'Synthesizing persona...', icon: '✨' },
+                                                    ].map((step, i) => (
+                                                        <motion.div
+                                                            initial={{ opacity: 0, x: -10 }}
+                                                            animate={{ opacity: 1, x: 0 }}
+                                                            transition={{ delay: i * 0.8 }}
+                                                            key={i}
+                                                            className="relative flex items-center gap-3 text-xs text-text-secondary py-1"
+                                                        >
+                                                            <div className="w-6 h-6 rounded-full bg-bg-item-surface border-2 border-purple-500/30 flex items-center justify-center shrink-0 relative z-10 text-[10px] shadow-sm shadow-purple-500/10">
+                                                                <span className="relative z-10">{step.icon}</span>
+                                                            </div>
+                                                            <span className="font-medium">{step.label}</span>
+                                                            {i === 0 && <RefreshCw size={12} className="animate-spin text-purple-400 ml-auto" />}
+                                                        </motion.div>
+                                                    ))}
+                                                </div>
+                                            )}
+
+                                            <button
+                                                onClick={async () => {
+                                                    setProfileError('');
+                                                    try {
+                                                        const fileResult = await window.electronAPI?.profileSelectFile?.();
+                                                        if (fileResult?.cancelled || !fileResult?.filePath) return;
+
+                                                        setProfileUploading(true);
+                                                        const result = await window.electronAPI?.profileUploadResume?.(fileResult.filePath);
+                                                        if (result?.success) {
+                                                            const status = await window.electronAPI?.profileGetStatus?.();
+                                                            if (status) setProfileStatus(status);
+                                                            const data = await window.electronAPI?.profileGetProfile?.();
+                                                            if (data) setProfileData(data);
+                                                        } else {
+                                                            setProfileError(result?.error || 'Upload failed');
+                                                        }
+                                                    } catch (e: any) {
+                                                        setProfileError(e.message || 'Upload failed');
+                                                    } finally {
+                                                        setProfileUploading(false);
+                                                    }
+                                                }}
+                                                disabled={profileUploading}
+                                                className={`px-6 py-2.5 rounded-full text-sm font-bold transition-all flex items-center justify-center gap-2 w-full max-w-[200px] mx-auto active:scale-95 ${profileUploading
+                                                    ? 'bg-bg-input text-text-tertiary cursor-wait border border-border-subtle'
+                                                    : 'bg-text-primary text-bg-base hover:opacity-90 shadow-md'
+                                                    }`}
+                                            >
+                                                {profileUploading ? 'Processing...' : 'Browse Files'}
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    {/* How It Works Premium Steps */}
+                                    <div className="mt-8">
+                                        <div className="flex items-center gap-3 mb-4">
+                                            <div className="h-px bg-border-subtle flex-1"></div>
+                                            <h4 className="text-[10px] font-bold text-text-secondary uppercase tracking-widest flex items-center gap-2">
+                                                <Info size={12} className="text-text-tertiary" /> How the magic works
+                                            </h4>
+                                            <div className="h-px bg-border-subtle flex-1"></div>
+                                        </div>
+                                        <div className="grid grid-cols-2 gap-3">
+                                            {[
+                                                { step: '1', title: 'Upload', text: 'Feed the engine your latest resume document.', color: 'from-purple-500 to-indigo-500', icon: <Upload size={14} className="text-white" /> },
+                                                { step: '2', title: 'Parse', text: 'AI structures your timeline into searchable nodes.', color: 'from-indigo-500 to-blue-500', icon: <FlaskConical size={14} className="text-white" /> },
+                                                { step: '3', title: 'Toggle', text: 'Activate Profile Mode to inject your persona.', color: 'from-blue-500 to-cyan-500', icon: <Power size={14} className="text-white" /> },
+                                                { step: '4', title: 'Interact', text: 'AI answers questions drawing from pure experience.', color: 'from-cyan-500 to-teal-500', icon: <MessageSquare size={14} className="text-white" /> },
+                                            ].map((item) => (
+                                                <div key={item.step} className="bg-bg-input/40 backdrop-blur-sm rounded-xl p-4 border border-border-subtle/50 hover:bg-bg-input/80 hover:border-border-muted transition-all flex flex-col gap-3 group/step">
+                                                    <div className="flex items-center justify-between">
+                                                        <div className={`w-8 h-8 rounded-lg bg-gradient-to-br ${item.color} shadow-sm flex items-center justify-center transform group-hover/step:scale-110 transition-transform duration-300`}>
+                                                            {item.icon}
+                                                        </div>
+                                                        <span className="text-[10px] font-black text-text-tertiary opacity-50">STEP {item.step}</span>
+                                                    </div>
+                                                    <div>
+                                                        <h5 className="text-[13px] font-bold text-text-primary mb-1">{item.title}</h5>
+                                                        <p className="text-[11px] text-text-secondary leading-relaxed">{item.text}</p>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
                                 </div>
                             )}
                             {activeTab === 'ai-providers' && (
