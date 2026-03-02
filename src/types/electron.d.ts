@@ -186,6 +186,10 @@ export interface ElectronAPI {
   // Google Search API
   setGoogleSearchApiKey: (apiKey: string) => Promise<{ success: boolean; error?: string }>
   setGoogleSearchCseId: (cseId: string) => Promise<{ success: boolean; error?: string }>
+
+  // License Management
+  licenseGetHardwareId: () => Promise<string>
+  licenseActivate: (key: string) => Promise<{ success: boolean; error?: string }>
 }
 
 declare global {

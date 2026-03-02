@@ -323,7 +323,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose }) =>
                 if (!currentLangKey) {
                     const systemLocale = navigator.language;
                     // Try to find exact match or primary match
-                    const match = Object.entries(langs).find(([key, config]: [string, any]) =>
+                    const match = Object.entries(langs).find(([_, config]: [string, any]) =>
                         config.bcp47 === systemLocale ||
                         config.iso639 === systemLocale ||
                         (config.alternates && config.alternates.includes(systemLocale))
