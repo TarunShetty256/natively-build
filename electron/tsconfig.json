@@ -14,7 +14,8 @@
     "resolveJsonModule": true
   },
   "include": [
-    "**/*.ts"
+    "**/*.ts",
+    "../premium/electron/**/*.ts"
   ],
   "exclude": [
     "db/seedDemo.ts",

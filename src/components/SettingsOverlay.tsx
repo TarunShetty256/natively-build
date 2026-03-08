@@ -13,8 +13,7 @@ import { AIProvidersSettings } from './settings/AIProvidersSettings';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useShortcuts } from '../hooks/useShortcuts';
 import { KeyRecorder } from './ui/KeyRecorder';
-import { ProfileVisualizer } from './profile/ProfileVisualizer';
-import { PremiumUpgradeModal } from './premium/PremiumUpgradeModal';
+import { ProfileVisualizer, PremiumUpgradeModal } from '../premium';
 
 interface CustomSelectProps {
     label: string;

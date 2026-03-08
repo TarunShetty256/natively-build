@@ -12,7 +12,6 @@ import {
   CUSTOM_RECAP_PROMPT, CUSTOM_FOLLOWUP_PROMPT, CUSTOM_FOLLOW_UP_QUESTIONS_PROMPT, CUSTOM_ASSIST_PROMPT
 } from "./llm/prompts"
 import { deepVariableReplacer, getByPath } from './utils/curlUtils';
-import { KnowledgeOrchestrator } from './knowledge/KnowledgeOrchestrator';
 import curl2Json from "@bany/curl-to-json";
 import { CustomProvider, CurlProvider } from './services/CredentialsManager';
 import { exec } from 'child_process';
@@ -53,7 +52,7 @@ export class LLMHelper {
   private customProvider: CustomProvider | null = null;
   private activeCurlProvider: CurlProvider | null = null;
   private groqFastTextMode: boolean = false;
-  private knowledgeOrchestrator: KnowledgeOrchestrator | null = null;
+  private knowledgeOrchestrator: any = null;
   private aiResponseLanguage: string = 'English';
   private sttLanguage: string = 'english-us';
 
@@ -669,15 +668,12 @@ ANSWER DIRECTLY:`;
     }
   }
 
-  /**
-   * Set the KnowledgeOrchestrator for knowledge mode integration.
-   */
-  public setKnowledgeOrchestrator(orchestrator: KnowledgeOrchestrator): void {
+  public setKnowledgeOrchestrator(orchestrator: any): void {
     this.knowledgeOrchestrator = orchestrator;
     console.log('[LLMHelper] KnowledgeOrchestrator attached');
   }
 
-  public getKnowledgeOrchestrator(): KnowledgeOrchestrator | null {
+  public getKnowledgeOrchestrator(): any {
     return this.knowledgeOrchestrator;
   }
 

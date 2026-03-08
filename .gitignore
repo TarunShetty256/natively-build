@@ -173,13 +173,5 @@ native-module/*.node
 native-module/target/
 native-module/*.node
 
-# Premium Features
-src/components/premium/
-src/components/profile/
-src/components/JDAwarenessToaster.tsx
-src/components/PremiumPromoToaster.tsx
-src/components/ProfileFeatureToaster.tsx
-src/hooks/useAdCampaigns.ts
-electron/services/LicenseManager.ts
-electron/knowledge/
-
+# Premium Features (proprietary — not included in open-source builds)
+premium/

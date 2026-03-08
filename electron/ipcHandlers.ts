@@ -46,29 +46,43 @@ export function initializeIpcHandlers(appState: AppState): void {
   });
 
   safeHandle("license:activate", async (event, key: string) => {
-    const { LicenseManager } = require('./services/LicenseManager');
-    return LicenseManager.getInstance().activateLicense(key);
+    try {
+      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
+      return LicenseManager.getInstance().activateLicense(key);
+    } catch {
+      return { success: false, error: 'Premium features not available in this build.' };
+    }
   });
   safeHandle("license:check-premium", async () => {
-    const { LicenseManager } = require('./services/LicenseManager');
-    return LicenseManager.getInstance().isPremium();
+    try {
+      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
+      return LicenseManager.getInstance().isPremium();
+    } catch {
+      return false;
+    }
   });
   safeHandle("license:deactivate", async () => {
-    const { LicenseManager } = require('./services/LicenseManager');
-    LicenseManager.getInstance().deactivate();
-    // Auto-disable knowledge mode when license is removed
     try {
-      const orchestrator = appState.getKnowledgeOrchestrator();
-      if (orchestrator) {
-        orchestrator.setKnowledgeMode(false);
-        console.log('[IPC] Knowledge mode auto-disabled due to license deactivation');
-      }
-    } catch (e) { /* ignore */ }
+      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
+      LicenseManager.getInstance().deactivate();
+      // Auto-disable knowledge mode when license is removed
+      try {
+        const orchestrator = appState.getKnowledgeOrchestrator();
+        if (orchestrator) {
+          orchestrator.setKnowledgeMode(false);
+          console.log('[IPC] Knowledge mode auto-disabled due to license deactivation');
+        }
+      } catch (e) { /* ignore */ }
+    } catch { /* LicenseManager not available */ }
     return { success: true };
   });
   safeHandle("license:get-hardware-id", async () => {
-    const { LicenseManager } = require('./services/LicenseManager');
-    return LicenseManager.getInstance().getHardwareId();
+    try {
+      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
+      return LicenseManager.getInstance().getHardwareId();
+    } catch {
+      return 'unavailable';
+    }
   });
 
   safeHandle("get-recognition-languages", async () => {
@@ -1754,7 +1768,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("profile:upload-resume", async (_, filePath: string) => {
     try {
       // Premium gate: require active license for profile features
-      const { LicenseManager } = require('./services/LicenseManager');
+      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
       if (!LicenseManager.getInstance().isPremium()) {
         return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
       }
@@ -1763,7 +1777,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized. Please ensure API keys are configured.' };
       }
-      const { DocType } = require('./knowledge/types');
+      const { DocType } = require('../premium/electron/knowledge/types');
       const result = await orchestrator.ingestDocument(filePath, DocType.RESUME);
       return result;
     } catch (error: any) {
@@ -1796,7 +1810,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       // Premium gate: only allow enabling profile mode with active license
       if (enabled) {
-        const { LicenseManager } = require('./services/LicenseManager');
+        const { LicenseManager } = require('../premium/electron/services/LicenseManager');
         if (!LicenseManager.getInstance().isPremium()) {
           return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
         }
@@ -1818,7 +1832,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
       }
-      const { DocType } = require('./knowledge/types');
+      const { DocType } = require('../premium/electron/knowledge/types');
       orchestrator.deleteDocumentsByType(DocType.RESUME);
       return { success: true };
     } catch (error: any) {
@@ -1862,7 +1876,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("profile:upload-jd", async (_, filePath: string) => {
     try {
       // Premium gate
-      const { LicenseManager } = require('./services/LicenseManager');
+      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
       if (!LicenseManager.getInstance().isPremium()) {
         return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
       }
@@ -1871,7 +1885,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized. Please ensure API keys are configured.' };
       }
-      const { DocType } = require('./knowledge/types');
+      const { DocType } = require('../premium/electron/knowledge/types');
       const result = await orchestrator.ingestDocument(filePath, DocType.JD);
       return result;
     } catch (error: any) {
@@ -1886,7 +1900,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (!orchestrator) {
         return { success: false, error: 'Knowledge engine not initialized' };
       }
-      const { DocType } = require('./knowledge/types');
+      const { DocType } = require('../premium/electron/knowledge/types');
       orchestrator.deleteDocumentsByType(DocType.JD);
       return { success: true };
     } catch (error: any) {
@@ -1897,7 +1911,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("profile:research-company", async (_, companyName: string) => {
     try {
       // Premium gate
-      const { LicenseManager } = require('./services/LicenseManager');
+      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
       if (!LicenseManager.getInstance().isPremium()) {
         return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
       }
@@ -1913,7 +1927,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       const googleSearchKey = cm.getGoogleSearchApiKey();
       const googleSearchCseId = cm.getGoogleSearchCseId();
       if (googleSearchKey && googleSearchCseId) {
-        const { GoogleCustomSearchProvider } = require('./knowledge/GoogleCustomSearchProvider');
+        const { GoogleCustomSearchProvider } = require('../premium/electron/knowledge/GoogleCustomSearchProvider');
         engine.setSearchProvider(new GoogleCustomSearchProvider(googleSearchKey, googleSearchCseId));
       }
 
@@ -1941,7 +1955,7 @@ export function initializeIpcHandlers(appState: AppState): void {
   safeHandle("profile:generate-negotiation", async () => {
     try {
       // Premium gate
-      const { LicenseManager } = require('./services/LicenseManager');
+      const { LicenseManager } = require('../premium/electron/services/LicenseManager');
       if (!LicenseManager.getInstance().isPremium()) {
         return { success: false, error: 'Pro license required. Please activate a license key to use Profile Intelligence features.' };
       }
@@ -1967,7 +1981,7 @@ export function initializeIpcHandlers(appState: AppState): void {
         dossier = engine.getCachedDossier(profileData.activeJD.company);
       }
 
-      const { generateNegotiationScript } = require('./knowledge/NegotiationEngine');
+      const { generateNegotiationScript } = require('../premium/electron/knowledge/NegotiationEngine');
       // We need access to internal docs - use the orchestrator's methods
       // For now, return the dossier data so the frontend can display it
       return { success: true, dossier, profileData };

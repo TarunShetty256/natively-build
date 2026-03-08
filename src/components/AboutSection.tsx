@@ -1,7 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import {
     Github, Twitter, Shield, Cpu, Database,
-    Heart, Linkedin, Instagram, Mail, MicOff, Star, Bug, Globe
+    Heart, Linkedin, Instagram, Mail, MicOff, Star, Bug, Globe, Sparkles, Zap
 } from 'lucide-react';
 import evinProfile from '../assets/evin.png';
 
@@ -57,6 +57,54 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
             <div>
                 <h3 className="text-lg font-bold text-text-primary mb-1">About Natively</h3>
                 <p className="text-sm text-text-secondary">Designed to be invisible, intelligent, and trusted.</p>
+            </div>
+
+            {/* What's New Section */}
+            <div>
+                <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">What's New in v2.0</h4>
+                <div className="bg-bg-item-surface rounded-xl border border-border-subtle overflow-hidden">
+                    <div className="p-3 border-b border-border-subtle bg-bg-card/50">
+                        <div className="flex items-start gap-4">
+                            <div className="w-10 h-10 rounded-lg bg-yellow-500/10 flex items-center justify-center text-yellow-400 shrink-0">
+                                <Sparkles size={20} />
+                            </div>
+                            <div>
+                                <h5 className="text-sm font-bold text-text-primary mb-1">Premium Profile Intelligence</h5>
+                                <p className="text-xs text-text-secondary leading-relaxed">
+                                    Upload your Resume & Job Description for hyper-personalized interview assistance, company research, and salary negotiation tactics.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="p-3 border-b border-border-subtle bg-bg-card/50">
+                        <div className="flex items-start gap-4">
+                            <div className="w-10 h-10 rounded-lg bg-emerald-500/10 flex items-center justify-center text-emerald-400 shrink-0">
+                                <Zap size={20} />
+                            </div>
+                            <div>
+                                <h5 className="text-sm font-bold text-text-primary mb-1">Live Meeting RAG</h5>
+                                <p className="text-xs text-text-secondary leading-relaxed">
+                                    Instant intelligent retrieval of context directly during a live meeting using local vectors.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div className="p-3 bg-bg-card/50">
+                        <div className="flex items-start gap-4">
+                            <div className="w-10 h-10 rounded-lg bg-pink-500/10 flex items-center justify-center text-pink-400 shrink-0">
+                                <Globe size={20} />
+                            </div>
+                            <div>
+                                <h5 className="text-sm font-bold text-text-primary mb-1">Soniox & Multilingual</h5>
+                                <p className="text-xs text-text-secondary leading-relaxed">
+                                    Ultra-fast streaming STT with Soniox. Set speech recognition specific to accents, dialects, and varied AI response languages.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
             </div>
 
             {/* Architecture Section */}

@@ -80,8 +80,17 @@ import { SonioxStreamingSTT } from "./audio/SonioxStreamingSTT"
 import { ThemeManager } from "./ThemeManager"
 import { RAGManager } from "./rag/RAGManager"
 import { DatabaseManager } from "./db/DatabaseManager"
-import { KnowledgeOrchestrator } from "./knowledge/KnowledgeOrchestrator"
-import { KnowledgeDatabaseManager } from "./knowledge/KnowledgeDatabaseManager"
+
+// Premium: Knowledge modules loaded conditionally
+let KnowledgeOrchestratorClass: any = null;
+let KnowledgeDatabaseManagerClass: any = null;
+try {
+    KnowledgeOrchestratorClass = require('../premium/electron/knowledge/KnowledgeOrchestrator').KnowledgeOrchestrator;
+    KnowledgeDatabaseManagerClass = require('../premium/electron/knowledge/KnowledgeDatabaseManager').KnowledgeDatabaseManager;
+} catch {
+    console.log('[Main] Knowledge modules not available — profile intelligence disabled.');
+}
+
 import { CredentialsManager } from "./services/CredentialsManager"
 import { ReleaseNotesManager } from "./update/ReleaseNotesManager"
 
@@ -97,7 +106,7 @@ export class AppState {
   private intelligenceManager: IntelligenceManager
   private themeManager: ThemeManager
   private ragManager: RAGManager | null = null
-  private knowledgeOrchestrator: KnowledgeOrchestrator | null = null
+  private knowledgeOrchestrator: any = null
   private tray: Tray | null = null
   private updateAvailable: boolean = false
   private disguiseMode: 'terminal' | 'settings' | 'activity' | 'none' = 'terminal'
@@ -249,9 +258,9 @@ export class AppState {
       const db = DatabaseManager.getInstance();
       const sqliteDb = db.getDb();
 
-      if (sqliteDb) {
-        const knowledgeDb = new KnowledgeDatabaseManager(sqliteDb);
-        this.knowledgeOrchestrator = new KnowledgeOrchestrator(knowledgeDb);
+      if (sqliteDb && KnowledgeDatabaseManagerClass && KnowledgeOrchestratorClass) {
+        const knowledgeDb = new KnowledgeDatabaseManagerClass(sqliteDb);
+        this.knowledgeOrchestrator = new KnowledgeOrchestratorClass(knowledgeDb);
 
         // Wire up LLM functions
         const llmHelper = this.processingHelper.getLLMHelper();
@@ -1070,7 +1079,7 @@ export class AppState {
     return this.ragManager;
   }
 
-  public getKnowledgeOrchestrator(): KnowledgeOrchestrator | null {
+  public getKnowledgeOrchestrator(): any {
     return this.knowledgeOrchestrator;
   }
 
