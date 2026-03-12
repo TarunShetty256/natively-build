@@ -228,9 +228,22 @@ export class AppState {
     // Setup Ollama IPC
     this.setupOllamaIpcHandlers()
 
-    // --- NEW SYSTEM AUDIO PIPELINE (SOX + NODE GOOGLE STT) ---
-    // EAGER INIT: Requested by user to prevent SCK freeze during meeting start.
-    this.setupSystemAudioPipeline()
+    // --- SYSTEM AUDIO PRE-WARMUP ---
+    // Create the TS/Rust objects now (instant, no blocking).
+    // Then schedule SCK warmup for 2s after launch, when the RunLoop is idle.
+    // By the time the user clicks "Start Natively", SCK is already initialized.
+    this.systemAudioCapture = new SystemAudioCapture();
+    // Wire data handler (will start emitting once start() is called with callback)
+    this.systemAudioCapture.on('data', (chunk: Buffer) => {
+      this.googleSTT?.write(chunk);
+    });
+    this.systemAudioCapture.on('error', (err: Error) => {
+      console.error('[Main] SystemAudioCapture Error:', err);
+    });
+    setTimeout(() => {
+      console.log('[Main] Triggering SCK pre-warmup...');
+      this.systemAudioCapture?.warmup();
+    }, 2000);
 
     // Initialize Auto-Updater
     this.setupAutoUpdater()

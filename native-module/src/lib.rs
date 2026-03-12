@@ -46,18 +46,76 @@ pub struct SystemAudioCapture {
 impl SystemAudioCapture {
     #[napi(constructor)]
     pub fn new(device_id: Option<String>) -> napi::Result<Self> {
-        println!("[SystemAudioCapture] Created with eager init (device: {:?})", device_id);
+        println!("[SystemAudioCapture] Created (device: {:?})", device_id);
         
-        let stop_signal = Arc::new(AtomicBool::new(false));
-        let tsfn_slot: Arc<std::sync::Mutex<Option<ThreadsafeFunction<Vec<i16>, ErrorStrategy::Fatal>>>> = Arc::new(std::sync::Mutex::new(None));
+        Ok(SystemAudioCapture {
+            stop_signal: Arc::new(AtomicBool::new(false)),
+            capture_thread: None,
+            sample_rate: 16000,
+            device_id,
+            tsfn_slot: Arc::new(std::sync::Mutex::new(None)),
+        })
+    }
+
+    #[napi]
+    pub fn get_sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Pre-warm SCK: spawn the background thread to do the slow ScreenCaptureKit
+    /// initialization (ShareableContent + stream start). Audio data is captured
+    /// but discarded until a callback is provided via start().
+    /// Call this early (e.g. 2s after app launch via setTimeout) so SCK is ready
+    /// before the user ever clicks "Start Natively".
+    #[napi]
+    pub fn warmup(&mut self) {
+        if self.capture_thread.is_some() {
+            println!("[SystemAudioCapture] Already warmed up, skipping.");
+            return;
+        }
+        println!("[SystemAudioCapture] Warming up SCK in background...");
+        self.spawn_dsp_thread();
+    }
+
+    /// Set the JS callback for audio data. If warmup() was called earlier,
+    /// audio will start flowing immediately. If not, this also triggers warmup.
+    #[napi]
+    pub fn start(&mut self, callback: JsFunction) -> napi::Result<()> {
+        let tsfn: ThreadsafeFunction<Vec<i16>, ErrorStrategy::Fatal> = callback
+            .create_threadsafe_function(0, |ctx| {
+                let vec: Vec<i16> = ctx.value;
+                let mut pcm_bytes = Vec::with_capacity(vec.len() * 2);
+                for sample in vec {
+                    pcm_bytes.extend_from_slice(&sample.to_le_bytes());
+                }
+                Ok(vec![pcm_bytes])
+            })?;
+
+        // Set the callback — the DSP thread will pick this up immediately
+        if let Ok(mut slot) = self.tsfn_slot.lock() {
+            *slot = Some(tsfn);
+        }
+
+        // If warmup wasn't called yet, spawn now (fallback)
+        if self.capture_thread.is_none() {
+            println!("[SystemAudioCapture] No warmup — spawning DSP thread on start().");
+            self.spawn_dsp_thread();
+        } else {
+            println!("[SystemAudioCapture] SCK already warm — callback set, audio flowing.");
+        }
+
+        Ok(())
+    }
+
+    /// Internal: spawn the background thread that initializes SCK and runs the DSP loop.
+    fn spawn_dsp_thread(&mut self) {
+        self.stop_signal.store(false, Ordering::SeqCst);
+        let stop_signal = self.stop_signal.clone();
+        let device_id_clone = self.device_id.take();
+        let tsfn_slot_clone = self.tsfn_slot.clone();
         
-        let stop_signal_clone = stop_signal.clone();
-        let device_id_clone = device_id.clone();
-        let tsfn_slot_clone = tsfn_slot.clone();
-        
-        // DSP thread with ScreenCaptureKit init + silence suppression + Condvar wakeup
-        let capture_thread = Some(thread::spawn(move || {
-            println!("[SystemAudioCapture] Eagerly creating ScreenCaptureKit stream in background thread...");
+        self.capture_thread = Some(thread::spawn(move || {
+            println!("[SystemAudioCapture] Background thread: initializing ScreenCaptureKit...");
             let input = match speaker::SpeakerInput::new(device_id_clone) {
                 Ok(i) => i,
                 Err(e) => {
@@ -82,19 +140,18 @@ impl SystemAudioCapture {
                 }
             };
 
+            println!("[SystemAudioCapture] SCK ready. DSP loop running.");
+
             let mut resampler = StreamingResampler::new(input_sample_rate, 16000.0);
             let mut frame_buffer: Vec<i16> = Vec::with_capacity(FRAME_SAMPLES * 4);
             let mut raw_batch: Vec<f32> = Vec::with_capacity(4096);
             
-            // Use system audio config (lower threshold for quieter system audio)
             let mut suppressor = SilenceSuppressor::new(
                 SilenceSuppressionConfig::for_system_audio()
             );
 
-            println!("[SystemAudioCapture] DSP thread started (suppression active)");
-
             loop {
-                if stop_signal_clone.load(Ordering::Relaxed) {
+                if stop_signal.load(Ordering::Relaxed) {
                     break;
                 }
                 
@@ -113,7 +170,7 @@ impl SystemAudioCapture {
                     raw_batch.clear();
                 }
 
-                // 3. Process frames with Silence Suppression
+                // 3. Process frames — only deliver if callback is set
                 while frame_buffer.len() >= FRAME_SAMPLES {
                     let frame: Vec<i16> = frame_buffer.drain(0..FRAME_SAMPLES).collect();
                     match suppressor.process(&frame) {
@@ -131,9 +188,7 @@ impl SystemAudioCapture {
                                 }
                             }
                         },
-                        FrameAction::Suppress => {
-                            // Do nothing (bandwidth saving)
-                        }
+                        FrameAction::Suppress => {}
                     }
                 }
                 
@@ -145,38 +200,6 @@ impl SystemAudioCapture {
             
             println!("[SystemAudioCapture] DSP thread stopped.");
         }));
-
-        Ok(SystemAudioCapture {
-            stop_signal,
-            capture_thread,
-            sample_rate: 16000,
-            device_id,
-            tsfn_slot,
-        })
-    }
-
-    #[napi]
-    pub fn get_sample_rate(&self) -> u32 {
-        self.sample_rate
-    }
-
-    #[napi]
-    pub fn start(&mut self, callback: JsFunction) -> napi::Result<()> {
-        let tsfn: ThreadsafeFunction<Vec<i16>, ErrorStrategy::Fatal> = callback
-            .create_threadsafe_function(0, |ctx| {
-                let vec: Vec<i16> = ctx.value;
-                let mut pcm_bytes = Vec::with_capacity(vec.len() * 2);
-                for sample in vec {
-                    pcm_bytes.extend_from_slice(&sample.to_le_bytes());
-                }
-                Ok(vec![pcm_bytes])
-            })?;
-
-        if let Ok(mut slot) = self.tsfn_slot.lock() {
-            *slot = Some(tsfn);
-        }
-
-        Ok(())
     }
 
     #[napi]

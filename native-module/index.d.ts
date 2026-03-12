@@ -24,6 +24,18 @@ export declare function getOutputDevices(): Array<AudioDeviceInfo>
 export declare class SystemAudioCapture {
   constructor(deviceId?: string | undefined | null)
   getSampleRate(): number
+  /**
+   * Pre-warm SCK: spawn the background thread to do the slow ScreenCaptureKit
+   * initialization (ShareableContent + stream start). Audio data is captured
+   * but discarded until a callback is provided via start().
+   * Call this early (e.g. 2s after app launch via setTimeout) so SCK is ready
+   * before the user ever clicks "Start Natively".
+   */
+  warmup(): void
+  /**
+   * Set the JS callback for audio data. If warmup() was called earlier,
+   * audio will start flowing immediately. If not, this also triggers warmup.
+   */
   start(callback: (...args: any[]) => any): void
   pauseCapture(): void
   stop(): void
