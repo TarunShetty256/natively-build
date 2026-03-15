@@ -27,6 +27,7 @@ export class WindowHelper {
   private currentWindowMode: 'launcher' | 'overlay' = 'launcher'
 
   private appState: AppState
+  private contentProtection: boolean = false
 
   // Initialize with explicit number type and 0 value
   private screenWidth: number = 0
@@ -42,13 +43,17 @@ export class WindowHelper {
   }
 
   public setContentProtection(enable: boolean): void {
-    if (this.launcherWindow && !this.launcherWindow.isDestroyed()) {
-      this.launcherWindow.setContentProtection(enable)
-    }
-    if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
-      this.overlayWindow.setContentProtection(enable)
-    }
-    console.log(`[WindowHelper] Content Protection set to: ${enable}`)
+    this.contentProtection = enable
+    this.applyContentProtection(enable)
+  }
+
+  private applyContentProtection(enable: boolean): void {
+    const windows = [this.launcherWindow, this.overlayWindow]
+    windows.forEach(win => {
+      if (win && !win.isDestroyed()) {
+        win.setContentProtection(enable);
+      }
+    });
   }
 
   public setWindowDimensions(width: number, height: number): void {
@@ -160,7 +165,7 @@ export class WindowHelper {
       return;
     }
 
-    this.launcherWindow.setContentProtection(false)
+    this.launcherWindow.setContentProtection(this.contentProtection)
 
     this.launcherWindow.loadURL(`${startUrl}?window=launcher`)
       .then(() => console.log('[WindowHelper] loadURL success'))
@@ -199,7 +204,7 @@ export class WindowHelper {
     }
 
     this.overlayWindow = new BrowserWindow(overlaySettings)
-    this.overlayWindow.setContentProtection(false)
+    this.overlayWindow.setContentProtection(this.contentProtection)
 
     if (process.platform === "darwin") {
       this.overlayWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
@@ -211,8 +216,7 @@ export class WindowHelper {
 
     // --- 3. Startup Sequence ---
     this.launcherWindow.once('ready-to-show', () => {
-      this.launcherWindow?.show()
-      this.launcherWindow?.focus()
+      this.switchToLauncher()
       this.isWindowVisible = true
     })
 
@@ -324,16 +328,33 @@ export class WindowHelper {
       // Reset overlay position to center or last known? 
       // For now, center it nicely
       const primaryDisplay = screen.getPrimaryDisplay()
-      const workArea = primaryDisplay.workAreaSize
-      const x = Math.floor((workArea.width - 600) / 2)
-      const y = Math.floor((workArea.height - 600) / 2)
+      const workArea = primaryDisplay.workArea;
+      const currentBounds = this.overlayWindow.getBounds();
+      const targetHeight = Math.max(currentBounds.height, 216);
+      const x = Math.floor(workArea.x + (workArea.width - 600) / 2)
+      const y = Math.floor(workArea.y + (workArea.height - 600) / 2)
 
-      // Only reset if not already positioned? existing logic used to remember but let's reset for predictability
-      this.overlayWindow.setBounds({ x, y, width: 600, height: 216 });
+      this.overlayWindow.setBounds({ x, y, width: 600, height: targetHeight });
 
-      this.overlayWindow.show();
-      this.overlayWindow.focus();
-      this.overlayWindow.setAlwaysOnTop(true, "floating");
+      if (process.platform === 'win32' && this.contentProtection) {
+        // Opacity Shield: Show at 0 opacity first to prevent frame leak
+        this.overlayWindow.setOpacity(0);
+        this.overlayWindow.show();
+        this.overlayWindow.setContentProtection(true);
+        // Small delay to ensure Windows DWM processes the flag before making it opaque
+        setTimeout(() => {
+          if (this.overlayWindow && !this.overlayWindow.isDestroyed()) {
+            this.overlayWindow.setOpacity(1);
+            this.overlayWindow.focus();
+            this.overlayWindow.setAlwaysOnTop(true, "floating");
+          }
+        }, 60);
+      } else {
+        this.overlayWindow.setContentProtection(this.contentProtection);
+        this.overlayWindow.show();
+        this.overlayWindow.focus();
+        this.overlayWindow.setAlwaysOnTop(true, "floating");
+      }
       this.isWindowVisible = true;
     }
 
@@ -349,10 +370,23 @@ export class WindowHelper {
 
     // Show Launcher FIRST
     if (this.launcherWindow && !this.launcherWindow.isDestroyed()) {
-      this.launcherWindow.show();
-      this.launcherWindow.focus();
+      if (process.platform === 'win32' && this.contentProtection) {
+        // Opacity Shield: Show at 0 opacity first
+        this.launcherWindow.setOpacity(0);
+        this.launcherWindow.show();
+        this.launcherWindow.setContentProtection(true);
+        setTimeout(() => {
+          if (this.launcherWindow && !this.launcherWindow.isDestroyed()) {
+            this.launcherWindow.setOpacity(1);
+            this.launcherWindow.focus();
+          }
+        }, 60);
+      } else {
+        this.launcherWindow.setContentProtection(this.contentProtection);
+        this.launcherWindow.show();
+        this.launcherWindow.focus();
+      }
       this.isWindowVisible = true;
-
     }
 
     // Hide Overlay SECOND
