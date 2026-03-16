@@ -1587,34 +1587,65 @@ export class AppState {
     let appName = "Natively";
     let iconPath = "";
 
+    const isWin = process.platform === 'win32';
+    const isMac = process.platform === 'darwin';
+
     switch (mode) {
       case 'terminal':
-        appName = "Terminal ";
-        iconPath = app.isPackaged
-          ? path.join(process.resourcesPath, "assets/fakeicon/terminal.png")
-          : path.join(app.getAppPath(), "assets/fakeicon/terminal.png");
+        appName = isWin ? "Command Prompt " : "Terminal ";
+        if (isWin) {
+          iconPath = app.isPackaged
+            ? path.join(process.resourcesPath, "assets/fakeicon/win/terminal.png")
+            : path.join(app.getAppPath(), "assets/fakeicon/win/terminal.png");
+        } else {
+          iconPath = app.isPackaged
+            ? path.join(process.resourcesPath, "assets/fakeicon/mac/terminal.png")
+            : path.join(app.getAppPath(), "assets/fakeicon/mac/terminal.png");
+        }
         break;
       case 'settings':
-        appName = "System Settings ";
-        iconPath = app.isPackaged
-          ? path.join(process.resourcesPath, "assets/fakeicon/settings.png")
-          : path.join(app.getAppPath(), "assets/fakeicon/settings.png");
+        appName = isWin ? "Settings " : "System Settings ";
+        if (isWin) {
+          iconPath = app.isPackaged
+            ? path.join(process.resourcesPath, "assets/fakeicon/win/settings.png")
+            : path.join(app.getAppPath(), "assets/fakeicon/win/settings.png");
+        } else {
+          iconPath = app.isPackaged
+            ? path.join(process.resourcesPath, "assets/fakeicon/mac/settings.png")
+            : path.join(app.getAppPath(), "assets/fakeicon/mac/settings.png");
+        }
         break;
       case 'activity':
-        appName = "Activity Monitor ";
-        iconPath = app.isPackaged
-          ? path.join(process.resourcesPath, "assets/fakeicon/activity.png")
-          : path.join(app.getAppPath(), "assets/fakeicon/activity.png");
+        appName = isWin ? "Task Manager " : "Activity Monitor ";
+        if (isWin) {
+          iconPath = app.isPackaged
+            ? path.join(process.resourcesPath, "assets/fakeicon/win/activity.png")
+            : path.join(app.getAppPath(), "assets/fakeicon/win/activity.png");
+        } else {
+          iconPath = app.isPackaged
+            ? path.join(process.resourcesPath, "assets/fakeicon/mac/activity.png")
+            : path.join(app.getAppPath(), "assets/fakeicon/mac/activity.png");
+        }
         break;
       case 'none':
         appName = "Natively";
-        iconPath = app.isPackaged
-          ? path.join(process.resourcesPath, "natively.icns")
-          : path.join(app.getAppPath(), "assets/natively.icns");
+        if (isMac) {
+          iconPath = app.isPackaged
+            ? path.join(process.resourcesPath, "natively.icns")
+            : path.join(app.getAppPath(), "assets/natively.icns");
+        } else if (isWin) {
+          iconPath = app.isPackaged
+            ? path.join(process.resourcesPath, "assets/icons/win/icon.ico")
+            : path.join(app.getAppPath(), "assets/icons/win/icon.ico");
+        } else {
+          iconPath = app.isPackaged
+            ? path.join(process.resourcesPath, "icon.png")
+            : path.join(app.getAppPath(), "assets/icon.png");
+        }
         break;
     }
 
-    console.log(`[AppState] Applying disguise: ${mode} (${appName})`);
+    console.log(`[AppState] Applying disguise: ${mode} (${appName}) on ${process.platform}`);
 
     // 1. Update process title (affects Activity Monitor / Task Manager)
     process.title = appName;
@@ -1625,20 +1656,22 @@ export class AppState {
     if (!this.isUndetectable) {
       app.setName(appName);
     }
-    if (process.platform === 'darwin') {
+
+    if (isMac) {
       process.env.CFBundleName = appName.trim();
     }
 
     // 3. Update App User Model ID (Windows Taskbar grouping)
-    if (process.platform === 'win32') {
-      app.setAppUserModelId(`${appName.trim()}-${mode}`);
+    if (isWin) {
+      // Use unique AUMID per disguise to avoid grouping with the real app
+      app.setAppUserModelId(`com.natively.assistant.${mode}`);
     }
 
     // 4. Update Icons
     if (fs.existsSync(iconPath)) {
       const image = nativeImage.createFromPath(iconPath);
 
-      if (process.platform === 'darwin') {
+      if (isMac) {
         // Skip dock icon update when dock is hidden to avoid potential flicker
         if (!this.isUndetectable) {
           app.dock.setIcon(image);
@@ -1682,7 +1715,7 @@ export class AppState {
     const forceUpdate = () => {
       process.title = appName;
       // Only call app.setName when NOT in stealth — it causes dock to re-show
-      if (process.platform === 'darwin' && !this.isUndetectable) {
+      if (isMac && !this.isUndetectable) {
         app.setName(appName);
       }
     };
