@@ -54,6 +54,11 @@ const SettingsPopup = () => {
                 // Check premium status
                 const premium = await window.electronAPI?.licenseCheckPremium?.();
                 setIsPremium(!!premium);
+                try {
+                    localStorage.setItem('natively_premium_active', premium ? 'true' : 'false');
+                } catch {
+                    // Ignore storage errors; premium state is still held by main process.
+                }
             } catch (e) { console.warn('[SettingsPopup] Failed to load profile/premium status:', e); }
 
         };

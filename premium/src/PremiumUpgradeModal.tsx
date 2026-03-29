@@ -1,4 +1,4 @@
-/// <reference path="../../../src/types/electron.d.ts" />
+/// <reference path="../../src/types/electron.d.ts" />
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Lock, Key, ExternalLink, CheckCircle, AlertCircle, Copy, Check, X, Sparkles } from 'lucide-react';
@@ -9,7 +9,7 @@ import {
     ToastDescription,
     ToastMessage,
     ToastVariant
-} from '../../../src/components/ui/toast';
+} from '../../src/components/ui/toast';
 
 interface PremiumUpgradeModalProps {
     isOpen: boolean;

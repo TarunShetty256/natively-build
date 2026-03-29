@@ -76,6 +76,15 @@ const formatTime = (dateStr: string) => {
     return date.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase();
 };
 
+const formatStartIn = (startTime: string) => {
+    const minutesUntil = Math.max(0, Math.ceil((new Date(startTime).getTime() - Date.now()) / 60000));
+    if (minutesUntil >= 60) {
+        const hoursUntil = Math.max(1, Math.ceil(minutesUntil / 60));
+        return `${hoursUntil} hr${hoursUntil === 1 ? '' : 's'}`;
+    }
+    return `${minutesUntil} min`;
+};
+
 const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onPageChange, ollamaPullStatus = 'idle', ollamaPullPercent = 0, ollamaPullMessage = '' }) => {
     const [meetings, setMeetings] = useState<Meeting[]>([]);
     const [isDetectable, setIsDetectable] = useState(false);
@@ -85,6 +94,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     const [isPrepared, setIsPrepared] = useState(false);
     const [preparedEvent, setPreparedEvent] = useState<any>(null);
     const [isCalendarConnected, setIsCalendarConnected] = useState(false);
+    const [calendarEmail, setCalendarEmail] = useState<string | null>(null);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [showNotification, setShowNotification] = useState(false);
 
@@ -157,6 +167,16 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         fetchMeetings();
         fetchEvents();
 
+        if (window.electronAPI?.getCalendarStatus) {
+            window.electronAPI.getCalendarStatus()
+                .then((status) => {
+                    if (!mounted) return;
+                    setIsCalendarConnected(status.connected);
+                    setCalendarEmail(status.email || null);
+                })
+                .catch(() => {});
+        }
+
         // Sync initial meeting active state — guarded so unmounted component isn't written to
         if (window.electronAPI?.getMeetingActive) {
             window.electronAPI.getMeetingActive()
@@ -217,10 +237,15 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         };
     }, [isShortcutPressed]);
 
-    // Filter next meeting (within 60 mins)
+    const upcomingList = upcomingEvents
+        .filter(e => new Date(e.startTime).getTime() > Date.now())
+        .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
+        .slice(0, 3);
+
+    // Filter next meeting (within 8 hours)
     const nextMeeting = upcomingEvents.find(e => {
         const diff = new Date(e.startTime).getTime() - Date.now();
-        return diff > -5 * 60000 && diff < 60 * 60000; // -5 min to +60 min
+        return diff > -5 * 60000 && diff < 8 * 60 * 60000; // -5 min to +8 hours
     });
 
     const handlePrepare = (event: any) => {
@@ -232,15 +257,10 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         if (!preparedEvent) return;
         analytics.trackCommandExecuted('start_prepared_meeting');
         try {
-            const inputDeviceId = localStorage.getItem('preferredInputDeviceId');
-            const outputDeviceId = localStorage.getItem('preferredOutputDeviceId');
-
-            await window.electronAPI.startMeeting({
-                title: preparedEvent.title,
-                calendarEventId: preparedEvent.id,
-                source: 'calendar',
-                audio: { inputDeviceId, outputDeviceId }
-            });
+            if (preparedEvent.link) {
+                await window.electronAPI?.openExternal?.(preparedEvent.link);
+                return;
+            }
             setIsPrepared(false);
         } catch (e) {
             console.error("Failed to start prepared meeting", e);
@@ -693,7 +713,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                         <div className="flex items-center gap-2 mb-2">
                                                             <div className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
                                                             <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-wider">Up Next</span>
-                                                            <span className="text-[11px] text-text-tertiary">• Starts in {Math.max(0, Math.ceil((new Date(nextMeeting.startTime).getTime() - Date.now()) / 60000))} min</span>
+                                                            <span className="text-[11px] text-text-tertiary">• Starts in {formatStartIn(nextMeeting.startTime)}</span>
                                                         </div>
 
                                                         <h2 className="text-xl font-bold text-text-primary leading-tight mb-1 line-clamp-2">
@@ -734,43 +754,107 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                     <div className="absolute top-0 right-0 w-[150px] h-[150px] bg-emerald-500/10 blur-[60px] pointer-events-none" />
                                                 </div>
                                             ) : (
-                                                <div className="md:col-span-2 h-full">
-                                                    <FeatureSpotlight />
-                                                </div>
+                                                upcomingList.length > 0 ? (
+                                                    <div className={`md:col-span-2 relative group rounded-xl overflow-hidden ${isLight ? 'bg-bg-elevated' : 'bg-bg-secondary'} flex flex-col shadow-[0_1px_3px_rgba(0,0,0,0.07),0_1px_2px_rgba(0,0,0,0.04)]`}>
+                                                        <div className="p-5 flex-1 relative z-10">
+                                                            <div className="flex items-center gap-2 mb-3">
+                                                                <div className="w-1.5 h-1.5 rounded-full bg-blue-400" />
+                                                                <span className="text-[11px] font-bold text-blue-400 uppercase tracking-wider">Upcoming</span>
+                                                                <span className="text-[11px] text-text-tertiary">• Next 24 hours</span>
+                                                            </div>
+
+                                                            <div className="space-y-3">
+                                                                {upcomingList.map((event) => (
+                                                                    <div key={event.id} className="flex items-center justify-between gap-4">
+                                                                        <div className="min-w-0">
+                                                                            <div className="text-sm font-semibold text-text-primary truncate">
+                                                                                {event.title}
+                                                                            </div>
+                                                                            <div className="flex items-center gap-2 text-[11px] text-text-tertiary">
+                                                                                <Calendar size={11} />
+                                                                                <span>
+                                                                                    {new Date(event.startTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                                                                                    {' - '}
+                                                                                    {new Date(event.endTime).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}
+                                                                                </span>
+                                                                            </div>
+                                                                        </div>
+                                                                        {event.link && (
+                                                                            <div className="text-[10px] text-text-tertiary whitespace-nowrap flex items-center gap-1">
+                                                                                <LinkIcon size={10} />
+                                                                                Link ready
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+
+                                                        <div className="p-4 bg-bg-elevated/50 border-t border-border-subtle flex items-center gap-3">
+                                                            <button
+                                                                onClick={handleRefresh}
+                                                                className={`flex-1 border px-4 py-2 rounded-lg text-xs font-medium transition-all flex items-center justify-center gap-2 ${isLight ? 'bg-bg-item-surface hover:bg-bg-item-active border-border-muted text-text-primary' : 'bg-white/10 hover:bg-white/20 border-white/10 text-white'}`}
+                                                            >
+                                                                <RefreshCw size={12} className="text-blue-400" />
+                                                                Refresh calendar
+                                                            </button>
+                                                        </div>
+
+                                                        <div className="absolute top-0 right-0 w-[150px] h-[150px] bg-blue-400/10 blur-[60px] pointer-events-none" />
+                                                    </div>
+                                                ) : (
+                                                    <div className="md:col-span-2 h-full">
+                                                        <FeatureSpotlight />
+                                                    </div>
+                                                )
                                             )
                                         )}
 
 
 
                                         {/* Right Secondary Card */}
-                                        <div className="md:col-span-1 rounded-xl overflow-hidden bg-bg-elevated relative group flex flex-col items-center pt-6 text-center">
-                                            {/* Backdrop Image */}
-                                            <div className="absolute inset-0">
-                                                <img src={calender} alt="" className="w-full h-full object-cover opacity-100 transition-opacity duration-500 translate-x--1 translate-y-[1px] scale-105" />
-                                            </div>
+                                        {!isPrepared && (
+                                            <div className="md:col-span-1 rounded-xl overflow-hidden bg-bg-elevated relative group flex flex-col items-center pt-6 text-center">
+                                                {/* Backdrop Image */}
+                                                <div className="absolute inset-0">
+                                                    <img src={calender} alt="" className="w-full h-full object-cover opacity-100 transition-opacity duration-500 translate-x--1 translate-y-[1px] scale-105" />
+                                                </div>
 
-                                            {/* Content Layer */}
-                                            <div className="relative z-10 w-full flex flex-col items-center h-full">
-                                                <h3 className="text-[19px] leading-tight mb-4">
-                                                    {isCalendarConnected ? (
-                                                        <>
-                                                            <span className="block font-semibold text-white">Calendar linked</span>
-                                                            <span className="block font-medium text-white/60 text-[0.95em]">Events synced</span>
-                                                        </>
-                                                    ) : (
-                                                        <>
-                                                            <span className="block font-semibold text-white">Link your calendar to</span>
-                                                            <span className="block font-medium text-white/60 text-[0.95em]">see upcoming events</span>
-                                                        </>
-                                                    )}
-                                                </h3>
+                                                {/* Content Layer */}
+                                                <div className="relative z-10 w-full flex flex-col items-center h-full">
+                                                    <h3 className="text-[19px] leading-tight mb-4">
+                                                        {isCalendarConnected ? (
+                                                            <>
+                                                                <span className="block font-semibold text-white">Calendar connected</span>
+                                                                <span className="block font-medium text-white/60 text-[0.95em]">
+                                                                    {calendarEmail ? calendarEmail : 'Upcoming events ready'}
+                                                                </span>
+                                                            </>
+                                                        ) : (
+                                                            <>
+                                                                <span className="block font-semibold text-white">Link your calendar to</span>
+                                                                <span className="block font-medium text-white/60 text-[0.95em]">see upcoming events</span>
+                                                            </>
+                                                        )}
+                                                    </h3>
 
-                                                <ConnectCalendarButton
-                                                    className="-translate-x-0.5"
-                                                    onConnect={() => setIsCalendarConnected(true)}
-                                                />
+                                                    <ConnectCalendarButton
+                                                        className="-translate-x-0.5"
+                                                        onConnect={async () => {
+                                                            setIsCalendarConnected(true);
+                                                            if (window.electronAPI?.getCalendarStatus) {
+                                                                try {
+                                                                    const status = await window.electronAPI.getCalendarStatus();
+                                                                    setCalendarEmail(status.email || null);
+                                                                } catch {
+                                                                    setCalendarEmail(null);
+                                                                }
+                                                            }
+                                                        }}
+                                                    />
+                                                </div>
                                             </div>
-                                        </div>
+                                        )}
                                     </div>
                                 </div>
                             </section>

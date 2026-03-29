@@ -8,8 +8,6 @@ import ModelSelectorWindow from "./components/ModelSelectorWindow"
 import SettingsOverlay from "./components/SettingsOverlay"
 import StartupSequence from "./components/StartupSequence"
 import { AnimatePresence, motion } from "framer-motion"
-import UpdateBanner from "./components/UpdateBanner"
-import { SupportToaster } from "./components/SupportToaster"
 import { AlertCircle } from "lucide-react"
 import { clampOverlayOpacity, OVERLAY_OPACITY_DEFAULT, getDefaultOverlayOpacity } from "./lib/overlayAppearance"
 import {
@@ -83,7 +81,13 @@ const App: React.FC = () => {
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState('general');
   const [showPremiumModal, setShowPremiumModal] = useState(false);
-  const [isPremiumActive, setIsPremiumActive] = useState(false);
+  const [isPremiumActive, setIsPremiumActive] = useState(() => {
+    try {
+      return localStorage.getItem('natively_premium_active') === 'true';
+    } catch {
+      return false;
+    }
+  });
 
   // Overlay opacity — only meaningful when isOverlayWindow, but stored centrally
   // so it can be initialized once from localStorage and updated via IPC.
@@ -128,7 +132,14 @@ const App: React.FC = () => {
 
     // Basic status check for campaign targeting
     window.electronAPI?.profileGetStatus?.().then(s => setHasProfile(s?.hasProfile || false)).catch(() => {});
-    window.electronAPI?.licenseCheckPremium?.().then(setIsPremiumActive).catch(() => {});
+    window.electronAPI?.licenseCheckPremium?.().then((premium) => {
+      setIsPremiumActive(!!premium);
+      try {
+        localStorage.setItem('natively_premium_active', premium ? 'true' : 'false');
+      } catch {
+        // Ignore storage errors; premium state remains in memory.
+      }
+    }).catch(() => {});
 
     // Listen for meeting processing completion to trigger post-meeting ads
     const removeMeetingsListener = window.electronAPI?.onMeetingsUpdated?.(() => {
@@ -413,8 +424,6 @@ const App: React.FC = () => {
         )}
       </AnimatePresence>
 
-      <UpdateBanner />
-      <SupportToaster />
       {isLauncherMainView && !isSettingsOpen && (
         <>
           <ProfileFeatureToaster 

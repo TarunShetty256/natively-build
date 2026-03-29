@@ -1,0 +1,88 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "app:dev",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"app:dev"
+			],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "app:dev",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"app:dev"
+			],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "app:dev",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"app:dev"
+			],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "app:dev",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"app:dev"
+			],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "electron:dev",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"electron:dev"
+			],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "app:dev",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"app:dev"
+			],
+			"isBackground": true,
+			"problemMatcher": [],
+			"group": "build"
+		},
+		{
+			"label": "app:build",
+			"type": "shell",
+			"command": "npm",
+			"args": [
+				"run",
+				"app:build"
+			],
+			"isBackground": false,
+			"group": "build"
+		}
+	]
+}

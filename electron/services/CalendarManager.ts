@@ -8,8 +8,8 @@ import { EventEmitter } from 'events';
 
 // Configuration
 // In a real app, these should be in environment variables or build configs
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || "YOUR_CLIENT_ID_HERE";
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || "YOUR_CLIENT_SECRET_HERE";
+const GOOGLE_CLIENT_ID: string = "760059233661-b39kfg3gqjau0af4kp1c09kv483k8ncs.apps.googleusercontent.com";
+const GOOGLE_CLIENT_SECRET: string = "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";
 const REDIRECT_URI = "http://localhost:11111/auth/callback";
 const SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"];
 const TOKEN_PATH = path.join(app.getPath('userData'), 'calendar_tokens.enc');
@@ -34,6 +34,7 @@ export class CalendarManager extends EventEmitter {
     private expiryDate: number | null = null;
     private isConnected: boolean = false;
     private updateInterval: NodeJS.Timeout | null = null;
+    private notifiedEventIds: Set<string> = new Set();
 
     private constructor() {
         super();
@@ -270,32 +271,60 @@ export class CalendarManager extends EventEmitter {
 
         const now = Date.now();
 
+        // Drop notifications for events that are no longer upcoming
+        for (const id of this.notifiedEventIds) {
+            const match = events.find(e => e.id === id);
+            if (!match) {
+                this.notifiedEventIds.delete(id);
+                continue;
+            }
+            const startTime = new Date(match.startTime).getTime();
+            if (!startTime || startTime <= now) {
+                this.notifiedEventIds.delete(id);
+            }
+        }
+
         events.forEach(event => {
             const startStr = event.startTime;
             if (!startStr) return;
 
             const startTime = new Date(startStr).getTime();
-            // Reminder time: 2 minutes before
-            const reminderTime = startTime - (2 * 60 * 1000);
+            if (startTime <= now) return;
+            // Reminder time: 8 hours before
+            if (this.notifiedEventIds.has(event.id)) return;
 
-            if (reminderTime > now) {
-                const delay = reminderTime - now;
-                // Only schedule if within next 24h (which fetch already limits)
-                if (delay < 24 * 60 * 60 * 1000) {
-                    const timeout = setTimeout(() => {
-                        this.showNotification(event);
-                    }, delay);
-                    this.reminderTimeouts.push(timeout);
+            const reminderTime = startTime - (8 * 60 * 60 * 1000);
+            const delay = Math.max(0, reminderTime - now);
+            // Only schedule if within next 24h (which fetch already limits)
+            if (delay < 24 * 60 * 60 * 1000) {
+                if (delay === 0) {
+                    this.showNotification(event);
+                    this.notifiedEventIds.add(event.id);
+                    return;
                 }
+
+                const timeout = setTimeout(() => {
+                    if (this.notifiedEventIds.has(event.id)) return;
+                    this.showNotification(event);
+                    this.notifiedEventIds.add(event.id);
+                }, delay);
+                this.reminderTimeouts.push(timeout);
             }
         });
     }
 
     private showNotification(event: CalendarEvent) {
         const { Notification } = require('electron');
+        const startTime = new Date(event.startTime).getTime();
+        const timeUntilMs = startTime - Date.now();
+        const minutesUntil = Math.max(1, Math.round(timeUntilMs / 60000));
+        const hoursUntil = Math.round(minutesUntil / 60);
+        const body = minutesUntil >= 60
+            ? `"${event.title}" starts in ${hoursUntil} hour${hoursUntil === 1 ? '' : 's'}. Start Natively?`
+            : `"${event.title}" starts in ${minutesUntil} minute${minutesUntil === 1 ? '' : 's'}. Start Natively?`;
         const notif = new Notification({
             title: 'Meeting starting soon',
-            body: `"${event.title}" starts in 2 minutes. Start Natively?`,
+            body,
             actions: [
                 { type: 'button', text: 'Start Meeting' },
                 { type: 'button', text: 'Dismiss' }
@@ -344,19 +373,50 @@ export class CalendarManager extends EventEmitter {
         const tomorrow = new Date(now.getTime() + 24 * 60 * 60 * 1000);
 
         try {
-            const response = await axios.get('https://www.googleapis.com/calendar/v3/calendars/primary/events', {
-                headers: {
-                    Authorization: `Bearer ${this.accessToken}`
-                },
-                params: {
-                    timeMin: now.toISOString(),
-                    timeMax: tomorrow.toISOString(),
-                    singleEvents: true,
-                    orderBy: 'startTime'
-                }
-            });
+            const headers = {
+                Authorization: `Bearer ${this.accessToken}`
+            };
 
-            const items = response.data.items || [];
+            let calendarIds: string[] = ['primary'];
+            try {
+                const calendarsResponse = await axios.get('https://www.googleapis.com/calendar/v3/users/me/calendarList', {
+                    headers
+                });
+                const calendars = calendarsResponse.data.items || [];
+                const selectedIds = calendars
+                    .filter((cal: any) => cal && cal.selected !== false)
+                    .map((cal: any) => cal.id)
+                    .filter((id: any) => typeof id === 'string' && id.length > 0);
+
+                if (selectedIds.length > 0) {
+                    calendarIds = selectedIds;
+                }
+            } catch (error) {
+                console.warn('[CalendarManager] Failed to fetch calendar list. Falling back to primary calendar.', error);
+            }
+
+            const eventResponses = await Promise.all(calendarIds.map(async (calendarId: string) => {
+                try {
+                    const response = await axios.get(
+                        `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
+                        {
+                            headers,
+                            params: {
+                                timeMin: now.toISOString(),
+                                timeMax: tomorrow.toISOString(),
+                                singleEvents: true,
+                                orderBy: 'startTime'
+                            }
+                        }
+                    );
+                    return response.data.items || [];
+                } catch (error) {
+                    console.warn(`[CalendarManager] Failed to fetch events for calendar: ${calendarId}`, error);
+                    return [];
+                }
+            }));
+
+            const items = eventResponses.flat();
 
             return items
                 .filter((item: any) => {

@@ -31,16 +31,12 @@ const FEATURES: FeatureSlide[] = [
 
     {
         id: 'support_natively',
-        headline: 'Support development',
-        subtitle: 'Built openly and sustained by users',
-        bullets: [
-            'Development driven by real users',
-            'Faster iteration on features that matter',
-
-        ],
+        headline: '🚀 Smart AI Assistant ',
+        subtitle: '🤖 Your Personal AI Copilot – From coding help to daily tasks, get instant support powered by advanced AI.',
+        bullets: [],
         type: 'support',
-        actionLabel: 'Contribute to development',
-        url: 'https://buymeacoffee.com/evinjohnn'
+        actionLabel: 'Connect with us',
+        url: 'https://github.com/TarunShetty256'
     }
 ];
 
@@ -70,10 +66,8 @@ export const FeatureSpotlight: React.FC = () => {
     useEffect(() => {
         if (isPaused) return;
 
-        // Support slide has longer duration (10s), others 6-8s
-        const baseDuration = isSupport ? 10000 : 6000;
-        const randomFactor = isSupport ? 0 : Math.random() * 2000;
-        const intervalDuration = baseDuration + randomFactor;
+        // Advance every 5s for all slides
+        const intervalDuration = 5000;
 
         const timer = setTimeout(() => {
             setCurrentIndex((prev) => (prev + 1) % FEATURES.length);
@@ -152,9 +146,9 @@ export const FeatureSpotlight: React.FC = () => {
                 <AnimatePresence initial={false}>
                     <motion.div
                         key={currentFeature.id}
-                        initial={{ opacity: 0, scale: 0.95 }}
-                        animate={{ opacity: 1, scale: 1 }}
-                        exit={{ opacity: 0, scale: 1.05 }}
+                        initial={{ opacity: 0, scale: 0.95, filter: 'blur(6px)' }}
+                        animate={{ opacity: 1, scale: 1, filter: 'blur(0px)' }}
+                        exit={{ opacity: 0, scale: 1.05, filter: 'blur(6px)' }}
                         transition={{
                             duration: 0.5,
                             ease: [0.16, 1, 0.3, 1] // Apple ease
@@ -308,7 +302,7 @@ export const FeatureSpotlight: React.FC = () => {
                                                         : (isSupport ? (
                                                             <span className="flex items-center gap-2">
                                                                 <Rocket size={14} className="text-[#1C1C1E]" strokeWidth={2.5} />
-                                                                Fund development
+                                                                {currentFeature.actionLabel || 'Support development'}
                                                             </span>
                                                         ) : (currentFeature.actionLabel || 'Mark interest'))
                                                     }

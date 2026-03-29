@@ -130,6 +130,18 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     // Dynamic Action Button Mode (Recap vs Brainstorm)
     const [actionButtonMode, setActionButtonMode] = useState<'recap' | 'brainstorm'>('recap');
 
+    const parseNegotiationCoachingPayload = (rawText: string) => {
+        try {
+            const parsed = JSON.parse(rawText);
+            if (parsed?.__negotiationCoaching) {
+                return parsed.__negotiationCoaching;
+            }
+        } catch {
+            // Not coaching JSON payload
+        }
+        return null;
+    };
+
     useEffect(() => {
         // Load persisted mode
         window.electronAPI?.getActionButtonMode?.()?.then((mode: 'recap' | 'brainstorm') => {
@@ -468,23 +480,37 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             setMessages(prev => {
                 const lastMsg = prev[prev.length - 1];
 
+                // If a coaching card is already active for this intent, ignore trailing tokens.
+                if (lastMsg && lastMsg.intent === 'what_to_answer' && lastMsg.isNegotiationCoaching) {
+                    return prev;
+                }
+
                 // If we already have a streaming message for this intent, append
                 if (lastMsg && lastMsg.isStreaming && lastMsg.intent === 'what_to_answer') {
+                    const nextText = lastMsg.text + data.token;
+                    const coaching = parseNegotiationCoachingPayload(nextText);
                     const updated = [...prev];
                     updated[prev.length - 1] = {
                         ...lastMsg,
-                        text: lastMsg.text + data.token
+                        text: coaching ? '' : nextText,
+                        isStreaming: true,
+                        isNegotiationCoaching: !!coaching,
+                        negotiationCoachingData: coaching || undefined
                     };
                     return updated;
                 }
+
+                const coaching = parseNegotiationCoachingPayload(data.token);
 
                 // Otherwise, start a new one (First token)
                 return [...prev, {
                     id: Date.now().toString(),
                     role: 'system',
-                    text: data.token,
+                    text: coaching ? '' : data.token,
                     intent: 'what_to_answer',
-                    isStreaming: true
+                    isStreaming: true,
+                    isNegotiationCoaching: !!coaching,
+                    negotiationCoachingData: coaching || undefined
                 }];
             });
         }));
@@ -493,6 +519,20 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             setIsProcessing(false);
             setMessages(prev => {
                 const lastMsg = prev[prev.length - 1];
+                const coaching = parseNegotiationCoachingPayload(data.answer);
+
+                // If a coaching card is already present for this intent, update in place and avoid duplicates.
+                if (lastMsg && lastMsg.intent === 'what_to_answer' && lastMsg.isNegotiationCoaching) {
+                    const updated = [...prev];
+                    updated[prev.length - 1] = {
+                        ...lastMsg,
+                        isStreaming: false,
+                        text: '',
+                        isNegotiationCoaching: true,
+                        negotiationCoachingData: coaching || lastMsg.negotiationCoachingData
+                    };
+                    return updated;
+                }
 
                 // If we were streaming, finalize it
                 if (lastMsg && lastMsg.isStreaming && lastMsg.intent === 'what_to_answer') {
@@ -500,8 +540,10 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     const updated = [...prev];
                     updated[prev.length - 1] = {
                         ...lastMsg,
-                        text: data.answer, // Ensure final consistency
-                        isStreaming: false
+                        text: coaching ? '' : data.answer, // Ensure final consistency
+                        isStreaming: false,
+                        isNegotiationCoaching: !!coaching,
+                        negotiationCoachingData: coaching || undefined
                     };
                     return updated;
                 }
@@ -510,8 +552,10 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 return [...prev, {
                     id: Date.now().toString(),
                     role: 'system',
-                    text: data.answer,  // Plain text, no markdown - ready to speak
-                    intent: 'what_to_answer'
+                    text: coaching ? '' : data.answer,  // Plain text, no markdown - ready to speak
+                    intent: 'what_to_answer',
+                    isNegotiationCoaching: !!coaching,
+                    negotiationCoachingData: coaching || undefined
                 }];
             });
         }));
@@ -1336,6 +1380,32 @@ Provide only the answer, nothing else.`;
                         setMessages(prev => prev.map(m =>
                             m.id === msg.id
                                 ? { ...m, negotiationCoachingData: m.negotiationCoachingData ? { ...m.negotiationCoachingData, showSilenceTimer: false } : undefined }
+                                : m
+                        ));
+                    }}
+                />
+            );
+        }
+
+        // Safety net: if any intent emits raw coaching JSON, render it as a card.
+        const inlineCoaching = parseNegotiationCoachingPayload(msg.text);
+        if (inlineCoaching) {
+            return (
+                <NegotiationCoachingCard
+                    {...inlineCoaching}
+                    phase={inlineCoaching.phase as any}
+                    onSilenceTimerEnd={() => {
+                        setMessages(prev => prev.map(m =>
+                            m.id === msg.id
+                                ? {
+                                    ...m,
+                                    isNegotiationCoaching: true,
+                                    negotiationCoachingData: {
+                                        ...inlineCoaching,
+                                        showSilenceTimer: false
+                                    },
+                                    text: ''
+                                }
                                 : m
                         ));
                     }}

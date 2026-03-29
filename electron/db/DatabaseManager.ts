@@ -237,19 +237,19 @@ export class DatabaseManager {
         if (version < 3) {
             console.log('[DatabaseManager] Applying migration v2 → v3: vec0 virtual tables');
             try {
-                // Create vec0 virtual table for chunk embeddings (dynamic dimension)
+                // Create vec0 virtual table for chunk embeddings (fixed dim; v8+ uses per-dim tables)
                 this.db.exec(`
                     CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
                         chunk_id INTEGER PRIMARY KEY,
-                        embedding float
+                        embedding float[768]
                     );
                 `);
 
-                // Create vec0 virtual table for summary embeddings (dynamic dimension)
+                // Create vec0 virtual table for summary embeddings (fixed dim; v8+ uses per-dim tables)
                 this.db.exec(`
                     CREATE VIRTUAL TABLE IF NOT EXISTS vec_summaries USING vec0(
                         summary_id INTEGER PRIMARY KEY,
-                        embedding float
+                        embedding float[768]
                     );
                 `);
 
@@ -274,14 +274,14 @@ export class DatabaseManager {
                 this.db.exec(`
                     CREATE VIRTUAL TABLE IF NOT EXISTS vec_chunks USING vec0(
                         chunk_id INTEGER PRIMARY KEY,
-                        embedding float
+                        embedding float[768]
                     );
                 `);
 
                 this.db.exec(`
                     CREATE VIRTUAL TABLE IF NOT EXISTS vec_summaries USING vec0(
                         summary_id INTEGER PRIMARY KEY,
-                        embedding float
+                        embedding float[768]
                     );
                 `);
 

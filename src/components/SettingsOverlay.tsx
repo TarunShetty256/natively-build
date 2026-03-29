@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import packageJson from '../../package.json';
 import {
     X, Mic, Speaker, Monitor, Keyboard, User, LifeBuoy, LogOut, Upload,
@@ -420,6 +420,56 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     const [negotiationGenerating, setNegotiationGenerating] = useState(false);
     const [negotiationError, setNegotiationError] = useState('');
     const [verboseLogging, setVerboseLogging] = useState(false);
+    const aotPollRef = useRef<number | null>(null);
+    const AOT_POLL_INTERVAL_MS = 2000;
+    const AOT_POLL_MAX_ATTEMPTS = 20;
+
+    const refreshProfileData = async () => {
+        const data = await window.electronAPI?.profileGetProfile?.();
+        if (data) {
+            setProfileData(data);
+            if (data?.negotiationScript) setNegotiationScript(data.negotiationScript);
+        }
+        return data;
+    };
+
+    const stopAotPolling = () => {
+        if (aotPollRef.current !== null) {
+            window.clearInterval(aotPollRef.current);
+            aotPollRef.current = null;
+        }
+    };
+
+    const isAotSettled = (status: any): boolean => {
+        if (!status) return false;
+        const keys = ['companyResearch', 'negotiationScript', 'gapAnalysis', 'starMapping'];
+        return keys.every((key) => status[key] === 'done' || status[key] === 'failed');
+    };
+
+    const startAotPolling = () => {
+        stopAotPolling();
+        let attempts = 0;
+        aotPollRef.current = window.setInterval(async () => {
+            attempts += 1;
+            const data = await refreshProfileData();
+            if (isAotSettled(data?.aotStatus) || attempts >= AOT_POLL_MAX_ATTEMPTS) {
+                stopAotPolling();
+            }
+        }, AOT_POLL_INTERVAL_MS);
+    };
+
+    const getAotStatusMeta = (status?: string) => {
+        switch (status) {
+            case 'done':
+                return { label: 'Done', className: 'bg-green-500/10 text-green-500 border-green-500/20', dotClass: 'bg-green-500' };
+            case 'running':
+                return { label: 'Running', className: 'bg-blue-500/10 text-blue-500 border-blue-500/20', dotClass: 'bg-blue-500 animate-pulse' };
+            case 'failed':
+                return { label: 'Failed', className: 'bg-red-500/10 text-red-500 border-red-500/20', dotClass: 'bg-red-500' };
+            default:
+                return { label: 'Pending', className: 'bg-zinc-500/10 text-text-tertiary border-border-subtle', dotClass: 'bg-zinc-400' };
+        }
+    };
 
     // Close dropdown when clicking outside
     // Sync with global state changes
@@ -434,6 +484,12 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
             window.electronAPI?.getVerboseLogging?.().then(setVerboseLogging).catch(() => { });
         }
     }, [isOpen]);
+
+    useEffect(() => {
+        return () => {
+            stopAotPolling();
+        };
+    }, []);
 
     useEffect(() => {
         if (window.electronAPI?.onUndetectableChanged) {
@@ -1951,8 +2007,8 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                                 setJdUploading(true);
                                                                 const result = await window.electronAPI?.profileUploadJD?.(fileResult.filePath);
                                                                 if (result?.success) {
-                                                                    const data = await window.electronAPI?.profileGetProfile?.();
-                                                                    if (data) setProfileData(data);
+                                                                    await refreshProfileData();
+                                                                    startAotPolling();
                                                                 } else {
                                                                     setJdError(result?.error || 'JD upload failed');
                                                                 }
@@ -1979,6 +2035,47 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                             )}
                                         </div>
                                     </div>
+
+                                    {/* AOT Pipeline Status */}
+                                    {profileData?.hasActiveJD && profileData?.aotStatus && (
+                                        <div className="mt-5">
+                                            <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5">
+                                                <div className="flex items-center justify-between mb-4">
+                                                    <div className="flex items-center gap-3">
+                                                        <div className="w-9 h-9 rounded-lg bg-bg-input border border-border-subtle flex items-center justify-center text-blue-400">
+                                                            <RefreshCw size={18} />
+                                                        </div>
+                                                        <div>
+                                                            <h4 className="text-sm font-bold text-text-primary">Knowledge Pipeline</h4>
+                                                            <p className="text-[11px] text-text-secondary mt-0.5">
+                                                                Background tasks that power company intel and negotiation prep.
+                                                            </p>
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div className="grid grid-cols-2 gap-3">
+                                                    {[
+                                                        { key: 'companyResearch', label: 'Company Research' },
+                                                        { key: 'negotiationScript', label: 'Negotiation Script' },
+                                                        { key: 'gapAnalysis', label: 'Gap Analysis' },
+                                                        { key: 'starMapping', label: 'Culture Mapping' }
+                                                    ].map((item) => {
+                                                        const meta = getAotStatusMeta(profileData?.aotStatus?.[item.key]);
+                                                        return (
+                                                            <div key={item.key} className="flex items-center justify-between px-3 py-2 rounded-lg bg-bg-input border border-border-subtle">
+                                                                <span className="text-[11px] font-semibold text-text-secondary">{item.label}</span>
+                                                                <span className={`text-[9px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full border flex items-center gap-1 ${meta.className}`}>
+                                                                    <span className={`w-1.5 h-1.5 rounded-full ${meta.dotClass}`} />
+                                                                    {meta.label}
+                                                                </span>
+                                                            </div>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
 
                                     {/* Google Search API Card */}
                                     <div className="mt-5">
@@ -2074,7 +2171,10 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                         <div>
                                                             <div className="flex items-center gap-2">
                                                                 <h4 className="text-sm font-bold text-text-primary">
-                                                                    Company Intel: <span className="text-purple-400">{profileData.activeJD.company}</span>
+                                                                    Company Intel:{' '}
+                                                                    <span className="text-purple-400">
+                                                                        {profileData.activeJD.company || companyDossier?.company || 'Unknown Company'}
+                                                                    </span>
                                                                 </h4>
                                                                 <span className="text-[9px] font-bold px-1.5 py-0.5 rounded-full tracking-widest uppercase bg-purple-500/15 text-purple-400 border border-purple-500/25">Beta</span>
                                                             </div>

@@ -80,10 +80,11 @@ export const SupportToaster: React.FC<SupportToasterProps> = ({ className }) => 
 
     const handleSupport = () => {
         clickTimeRef.current = Date.now();
+        const supportUrl = 'https://github.com/TarunShetty256';
         if (window.electronAPI?.openExternal) {
-            window.electronAPI.openExternal('https://buymeacoffee.com/evinjohnn');
+            window.electronAPI.openExternal(supportUrl);
         } else {
-            window.open('https://buymeacoffee.com/evinjohnn', '_blank');
+            window.open(supportUrl, '_blank');
         }
     };
 
@@ -170,20 +171,6 @@ export const SupportToaster: React.FC<SupportToasterProps> = ({ className }) => 
                                 />
                             </div>
 
-                            {/* Typography Stack */}
-                            <div className="flex flex-col items-center text-center">
-                                {/* Headline */}
-                                <h3 className="text-[26px] font-[600] leading-[1.2] text-[#F3F3F3] tracking-[-0.01em] mb-[12px] antialiased">
-                                    Built by one.<br />
-                                    Used by thousands.
-                                </h3>
-                                {/* Body */}
-                                <p className="text-[14px] leading-[1.6] text-white/60 max-w-[480px] font-medium antialiased">
-                                    Natively is built and maintained by one developer.<br />
-                                    If it’s part of your daily workflow, your support keeps<br />
-                                    it moving forward.
-                                </p>
-                            </div>
                         </div>
 
                         {/* 2. Actions Footer (Bottom Stack) */}
