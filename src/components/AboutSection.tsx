@@ -178,37 +178,13 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                 <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">Community</h4>
                 <div className="space-y-4">
                     {/* 0. Official Website */}
-                    <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
-                        <div className="flex items-center gap-4">
-                            <div className="w-10 h-10 rounded-full bg-indigo-500/10 flex items-center justify-center text-indigo-500 shadow-sm shadow-indigo-500/5">
-                                <Globe size={18} className="opacity-80" />
-                            </div>
-                            <div>
-                                <h5 className="text-sm font-bold text-text-primary">Official Website</h5>
-                            </div>
-                        </div>
-                        <a
-                            href="https://natively.software"
-                            onClick={(e) => handleOpenLink(e, "https://natively.software")}
-                            className="whitespace-nowrap px-4 py-2 bg-text-primary hover:bg-white/90 text-bg-main text-xs font-bold rounded-lg transition-all shadow hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 flex items-center gap-2"
-                        >
-                            <Globe size={14} />
-                            Visit Website
-                        </a>
-                    </div>
+                    
 
                     {/* 1. Founder Profile */}
                     <div className="bg-bg-item-surface rounded-xl p-5">
                         <div className="flex flex-col gap-4">
                             <div className="flex items-start gap-4">
-                                <div className="w-12 h-12 rounded-full bg-bg-elevated border border-border-subtle flex items-center justify-center overflow-hidden shrink-0">
-                                    <img src={evinProfile} alt="Evin John" className="w-full h-full object-cover" />
-                                </div>
                                 <div className="pt-0.5">
-                                    <div className="flex items-center gap-2 mb-1">
-                                        <h5 className="text-sm font-bold text-text-primary">Evin John</h5>
-                                        <span className={`text-[10px] font-medium px-1.5 py-[1px] rounded-full ${isLight ? 'bg-amber-100 text-amber-700 border border-amber-300' : 'bg-yellow-400/10 text-yellow-200 border border-yellow-400/5'}`}>Creator</span>
-                                    </div>
                                     <p className="text-xs text-text-secondary leading-relaxed max-w-lg">
                                         I build software that stays out of the way.
                                         <br />
@@ -216,73 +192,11 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                                     </p>
                                 </div>
                             </div>
-                            <div className="flex items-center gap-4 pl-[60px]">
-                                <a
-                                    href="https://github.com/evinjohnn/natively-cluely-ai-assistant"
-                                    onClick={(e) => handleOpenLink(e, "https://github.com/evinjohnn/natively-cluely-ai-assistant")}
-                                    className="text-text-tertiary hover:text-text-primary transition-colors"
-                                    title="GitHub"
-                                >
-                                    <Github size={18} />
-                                </a>
-                                <a
-                                    href="https://x.com/evinjohnn"
-                                    onClick={(e) => handleOpenLink(e, "https://x.com/evinjohnn")}
-                                    className="text-text-tertiary hover:text-text-primary transition-colors"
-                                    title="Twitter"
-                                >
-                                    <Twitter size={18} />
-                                </a>
-                                <a
-                                    href="https://www.linkedin.com/in/evinjohn"
-                                    onClick={(e) => handleOpenLink(e, "https://www.linkedin.com/in/evinjohn")}
-                                    className="text-text-tertiary hover:text-text-primary transition-colors"
-                                    title="LinkedIn"
-                                >
-                                    <Linkedin size={18} />
-                                </a>
-                                <a
-                                    href="https://www.instagram.com/evinjohnn/"
-                                    onClick={(e) => handleOpenLink(e, "https://www.instagram.com/evinjohnn/")}
-                                    className="text-text-tertiary hover:text-text-primary transition-colors"
-                                    title="Instagram"
-                                >
-                                    <Instagram size={18} />
-                                </a>
-                            </div>
+                            
                         </div>
                     </div>
 
-                    {/* 2. Star & Report */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                        <a
-                            href="https://github.com/evinjohnn/natively-cluely-ai-assistant"
-                            onClick={(e) => handleOpenLink(e, "https://github.com/evinjohnn/natively-cluely-ai-assistant")}
-                            className="bg-bg-item-surface border border-border-subtle rounded-xl p-5 transition-all group flex items-center gap-4 h-full hover:bg-white/10"
-                        >
-                            <div className="w-10 h-10 rounded-lg bg-yellow-500/10 flex items-center justify-center text-yellow-500 shrink-0 group-hover:scale-110 transition-transform">
-                                <Star size={20} className="transition-all group-hover:fill-current" />
-                            </div>
-                            <div>
-                                <h5 className="text-sm font-bold text-text-primary">Star on GitHub</h5>
-                                <p className="text-xs text-text-secondary mt-0.5">Love Natively? Support us by starring the repo.</p>
-                            </div>
-                        </a>
-
-                        <a
-                            href="https://github.com/evinjohnn/natively-cluely-ai-assistant/issues"
-                            onClick={(e) => handleOpenLink(e, "https://github.com/evinjohnn/natively-cluely-ai-assistant/issues")}
-                            className="bg-bg-item-surface border border-border-subtle rounded-xl p-5 transition-all group flex items-center gap-4 h-full hover:bg-white/10"
-                        >
-                            <div className="w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center text-red-500 shrink-0 group-hover:scale-110 transition-transform">
-                                <Bug size={20} />
-                            </div>
-                            <div>
-                                <h5 className="text-sm font-bold text-text-primary">Report an Issue</h5>
-                                <p className="text-xs text-text-secondary mt-0.5">Found a bug? Let us know so we can fix it.</p>
-                            </div>
-                        </a>
-                    </div>
+                    
 
                     {/* 3. Get in Touch */}
                     <div className="bg-bg-item-surface rounded-xl border border-border-subtle p-5 flex flex-col md:flex-row items-center justify-between gap-4">
@@ -296,8 +210,8 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                             </div>
                         </div>
                         <a
-                            href="mailto:evinjohnignatious@gmail.com"
-                            onClick={(e) => handleOpenLink(e, "mailto:evinjohnignatious@gmail.com")}
+                            href="mailto:tarunshetty256@gmail.com"
+                            onClick={(e) => handleOpenLink(e, "mailto:tarunshetty256@gmail.com")}
                             className="whitespace-nowrap px-4 py-2 bg-text-primary hover:bg-white/90 text-bg-main text-xs font-bold rounded-lg transition-all shadow hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0 flex items-center gap-2"
                         >
                             <Mail size={14} />
@@ -317,8 +231,8 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                             </div>
                         </div>
                         <a
-                            href="https://buymeacoffee.com/evinjohnn"
-                            onClick={(e) => handleOpenLink(e, "https://buymeacoffee.com/evinjohnn")}
+                            href="https://github.com/tarunshetty256"
+                            onClick={(e) => handleOpenLink(e, "https://github.com/tarunshetty256")}
                             className="whitespace-nowrap px-4 py-2 bg-text-primary hover:bg-white/90 text-bg-main text-xs font-bold rounded-lg transition-all shadow hover:shadow-lg hover:-translate-y-0.5 active:translate-y-0"
                         >
                             Support Project
