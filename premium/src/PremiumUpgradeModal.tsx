@@ -178,7 +178,7 @@ export const PremiumUpgradeModal: React.FC<PremiumUpgradeModalProps> = ({ isOpen
                                 <X size={15} /> Deactivate License
                             </button>
                             <p className={`text-[10px] text-center px-4 mt-4 leading-relaxed ${isLight ? 'text-text-tertiary' : 'text-white/30'}`}>
-                                Deactivating will remove the license from this device, allowing you to use it on another computer.
+                                Deactivating only disables Pro on this device. The license stays locked to this device.
                             </p>
                         </div>
                     ) : (
@@ -213,7 +213,7 @@ export const PremiumUpgradeModal: React.FC<PremiumUpgradeModalProps> = ({ isOpen
 
                             {/* Buy button */}
                             <button
-                                onClick={() => window.electronAPI?.openExternal?.('https://evynignatious.gumroad.com/l/natively')}
+                                onClick={() => window.electronAPI?.openExternal?.('https://github.com/TarunShetty256/')}
                                 className="mt-5 w-full py-2.5 rounded-[10px] bg-[#FACC15] text-black text-[12px] font-semibold hover:bg-[#FDE047] active:scale-[0.98] transition-all duration-200 flex items-center justify-center shadow-[0_0_15px_rgba(250,204,21,0.15)] hover:shadow-[0_0_20px_rgba(250,204,21,0.25)]"
                             >
                                 Purchase License

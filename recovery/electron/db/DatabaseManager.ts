@@ -150,57 +150,23 @@ export class LicenseManager {
         if (!trimmed) {
             return { success: false, error: 'Invalid license key.' };
         }
-
-        if (process.env.NATIVELY_LICENSE_BYPASS === 'true') {
-            console.warn('[LicenseManager] NATIVELY_LICENSE_BYPASS enabled; skipping license verification.');
-            this.setPremiumState(true);
-            return { success: true };
-        }
-
-        if (MONGODB_URI) {
-            const deviceId = this.getHardwareId();
-            if (!deviceId || deviceId === 'unavailable') {
-                return { success: false, error: 'Unable to read device ID.' };
-            }
-
-            try {
-                const result = await this.verifyMongoLicense(trimmed, deviceId);
-                if (result.success) {
-                    console.log('[LicenseManager] MongoDB license verification succeeded.');
-                } else {
-                    console.warn('[LicenseManager] MongoDB license verification failed:', result.error);
-                }
-                this.setPremiumState(result.success);
-                return result;
-            } catch (err) {
-                console.error('[LicenseManager] MongoDB license verification failed:', err);
-                this.setPremiumState(false);
-                return { success: false, error: 'License verification failed.' };
-            }
-        }
-
-        let verify_gumroad_key: ((licenseKey: string) => Promise<unknown>) | undefined;
-        try {
-            const nativeModule = require('native-module');
-            verify_gumroad_key = nativeModule?.verify_gumroad_key;
-        } catch (err) {
-            console.error('[LicenseManager] Native module unavailable:', err);
-            return { success: false, error: 'Native module unavailable.' };
-        }
-
-        if (typeof verify_gumroad_key !== 'function') {
-            return { success: false, error: 'Native module unavailable.' };
+        const deviceId = this.getHardwareId();
+        if (!deviceId || deviceId === 'unavailable') {
+            return { success: false, error: 'Unable to read device ID.' };
         }
 
         try {
-            const result = await verify_gumroad_key(trimmed);
-            if (result === 'OK') {
-                this.setPremiumState(true);
-                return { success: true };
+            const result = await this.verifyMongoLicense(trimmed, deviceId);
+            if (result.success) {
+                console.log('[LicenseManager] MongoDB license verification succeeded.');
+            } else {
+                console.warn('[LicenseManager] MongoDB license verification failed:', result.error);
             }
-            return { success: false, error: this.normalizeError(result) };
+            this.setPremiumState(result.success);
+            return result;
         } catch (err) {
             console.error('[LicenseManager] License verification failed:', err);
+            this.setPremiumState(false);
             return { success: false, error: 'License verification failed.' };
         }
     }
@@ -261,7 +227,6 @@ export class LicenseManager {
     private async verifyMongoLicense(licenseKey: string, deviceId: string): Promise<LicenseResult> {
         const client = await getMongoClient();
         const collection = client.db(MONGODB_DB_NAME).collection(MONGODB_LICENSE_COLLECTION);
-        console.log(`[LicenseManager] MongoDB verify: db=${MONGODB_DB_NAME} collection=${MONGODB_LICENSE_COLLECTION}`);
 
         const doc = await collection.findOne({ licenseKey }, { projection: { licenseKey: 1, deviceId: 1 } });
         if (!doc) {

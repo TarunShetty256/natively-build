@@ -158,19 +158,24 @@ export class LicenseManager {
         }
 
         if (MONGODB_URI) {
+            const deviceId = this.getHardwareId();
+            if (!deviceId || deviceId === 'unavailable') {
+                return { success: false, error: 'Unable to read device ID.' };
+            }
+
             try {
-                const isValid = await this.verifyMongoLicense(trimmed);
-                if (isValid) {
+                const result = await this.verifyMongoLicense(trimmed, deviceId);
+                if (result.success) {
                     console.log('[LicenseManager] MongoDB license verification succeeded.');
                 } else {
-                    console.warn('[LicenseManager] MongoDB license verification failed: license not found.');
+                    console.warn('[LicenseManager] MongoDB license verification failed:', result.error);
                 }
-                this.setPremiumState(isValid);
-                return isValid
-                    ? { success: true }
-                    : { success: false, error: 'Invalid license key.' };
+                this.setPremiumState(result.success);
+                return result;
             } catch (err) {
                 console.error('[LicenseManager] MongoDB license verification failed:', err);
+                this.setPremiumState(false);
+                return { success: false, error: 'License verification failed.' };
             }
         }
 
@@ -211,6 +216,9 @@ export class LicenseManager {
 
     public getHardwareId(): string {
         try {
+            if (process.env.NODE_ENV !== 'production' && process.env.NATIVELY_DEV_DEVICE_ID) {
+                return process.env.NATIVELY_DEV_DEVICE_ID;
+            }
             const nativeModule = loadNativeModule();
             if (!nativeModule) return 'unavailable';
             return nativeModule.getHardwareId();
@@ -250,12 +258,47 @@ export class LicenseManager {
         return result || 'License verification failed.';
     }
 
-    private async verifyMongoLicense(licenseKey: string): Promise<boolean> {
+    private async verifyMongoLicense(licenseKey: string, deviceId: string): Promise<LicenseResult> {
         const client = await getMongoClient();
         const collection = client.db(MONGODB_DB_NAME).collection(MONGODB_LICENSE_COLLECTION);
         console.log(`[LicenseManager] MongoDB verify: db=${MONGODB_DB_NAME} collection=${MONGODB_LICENSE_COLLECTION}`);
-        const doc = await collection.findOne({ licenseKey });
-        return !!doc;
+
+        const doc = await collection.findOne({ licenseKey }, { projection: { licenseKey: 1, deviceId: 1 } });
+        if (!doc) {
+            return { success: false, error: 'Invalid license key.' };
+        }
+
+        if (doc.deviceId && doc.deviceId !== deviceId) {
+            return { success: false, error: 'License is already activated on another device.' };
+        }
+
+        if (!doc.deviceId) {
+            const deviceConflict = await collection.findOne(
+                { deviceId, licenseKey: { $ne: licenseKey } },
+                { projection: { licenseKey: 1 } }
+            );
+            if (deviceConflict) {
+                return { success: false, error: 'This device is already linked to another license.' };
+            }
+
+            const now = new Date();
+            const bindResult = await collection.updateOne(
+                { licenseKey, deviceId: { $exists: false } },
+                { $set: { deviceId, activatedAt: now, lastSeenAt: now } }
+            );
+
+            if (bindResult.matchedCount === 0) {
+                const latest = await collection.findOne({ licenseKey }, { projection: { deviceId: 1 } });
+                if (latest?.deviceId === deviceId) {
+                    return { success: true };
+                }
+                return { success: false, error: 'License is already activated on another device.' };
+            }
+        } else {
+            await collection.updateOne({ licenseKey }, { $set: { lastSeenAt: new Date() } });
+        }
+
+        return { success: true };
     }
 
     private hydrateWhenReady(): void {
