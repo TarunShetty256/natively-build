@@ -40,7 +40,7 @@ jobs:
           npm run build:native
 
       - name: Build EXE
-        run: npm run dist -- --publish=never
+        run: npx electron-builder --win --publish=never
 
       - name: Upload EXE
         uses: actions/upload-artifact@v4
