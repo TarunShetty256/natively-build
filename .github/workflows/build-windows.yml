@@ -7,27 +7,44 @@ jobs:
   build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
 
-      - name: Setup Node.js
+      - name: Setup Node
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
 
-      - name: Setup Rust toolchain
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Ensure Windows Rust target
+        run: rustup target add x86_64-pc-windows-msvc
 
       - name: Install dependencies
         run: npm ci
 
-      - name: Rebuild native modules
+      - name: Rebuild native node modules
         run: npm rebuild
 
-      - name: Build distribution
+      - name: Build frontend
+        run: npm run build
+
+      - name: Build electron
+        run: npm run build:electron
+
+      - name: Build native module (Windows)
+        run: |
+          echo Building Windows native module...
+          npm run build:native
+
+      - name: Check native output
+        run: dir native-module
+
+      - name: Build EXE
         run: npm run dist
 
-      - name: Upload release artifacts
+      - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
           name: windows-exe
