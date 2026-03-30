@@ -8,8 +8,8 @@ import { EventEmitter } from 'events';
 
 // Configuration
 // In a real app, these should be in environment variables or build configs
-const GOOGLE_CLIENT_ID: string = "760059233661-b39kfg3gqjau0af4kp1c09kv483k8ncs.apps.googleusercontent.com";
-const GOOGLE_CLIENT_SECRET: string = "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";
+const GOOGLE_CLIENT_ID: string = 'YOUR_CLIENT_ID_HERE'; // Set via env var
+const GOOGLE_CLIENT_SECRET: string = 'YOUR_CLIENT_SECRET_HERE'; // Set via env var
 const REDIRECT_URI = "http://localhost:11111/auth/callback";
 const SCOPES = ["https://www.googleapis.com/auth/calendar.readonly"];
 const TOKEN_PATH = path.join(app.getPath('userData'), 'calendar_tokens.enc');
