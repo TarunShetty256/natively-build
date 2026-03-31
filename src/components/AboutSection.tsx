@@ -178,8 +178,12 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                 <h4 className="text-xs font-bold text-text-tertiary uppercase tracking-wider mb-2 px-1">Community</h4>
                 <div className="space-y-4">
                     {/* 0. Official Website */}
-                    
-
+                     <div className="w-12 h-12 rounded-full bg-bg-elevated border border-border-subtle flex items-center justify-center overflow-hidden shrink-0">
+                                <img src="src/assets/icon.png" alt="TeamSync Logo" width={60} /> 
+                    </div> 
+                    <div className="w-12 h-12 rounded-full bg-bg-elevated border border-border-subtle flex items-center justify-center overflow-hidden shrink-0">
+                                <img src="src/assets/iconq.png" alt="TeamSync Logo" width={60} /> 
+                    </div>
                     {/* 1. Founder Profile */}
                     <div className="bg-bg-item-surface rounded-xl p-5">
                         <div className="flex flex-col gap-4">
