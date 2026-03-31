@@ -478,26 +478,27 @@ export class DatabaseManager {
 
         // Migrate chunk embeddings
         try {
-            const chunkRows = this.db.prepare(
-                'SELECT id, embedding FROM chunks WHERE embedding IS NOT NULL'
-            ).all() as any[];
+            const chunkRows = this.db.prepare('SELECT id, embedding FROM chunks WHERE embedding IS NOT NULL').all() as any[];
 
             if (chunkRows.length > 0) {
-                const insert = this.db.prepare(
-                    'INSERT OR IGNORE INTO vec_chunks(chunk_id, embedding) VALUES (?, ?)'
-                );
-                const migrateAll = this.db.transaction(() => {
-                    for (const row of chunkRows) {
-                        try {
-                            insert.run(row.id, row.embedding);
-                        } catch (err) {
-                            // On mismatch (e.g. mixed 768 and 3072 dims), nullify to re-embed later
-                            this.db.prepare('UPDATE chunks SET embedding = NULL WHERE id = ?').run(row.id);
+                const { chunksTable } = this.findExistingVecTables();
+                if (!chunksTable) {
+                    console.warn('[DatabaseManager] No vec_chunks table available to migrate chunk embeddings');
+                } else {
+                    const insert = this.db.prepare(`INSERT OR IGNORE INTO ${chunksTable}(chunk_id, embedding) VALUES (?, ?)`);
+                    const migrateAll = this.db.transaction(() => {
+                        for (const row of chunkRows) {
+                            try {
+                                insert.run(row.id, row.embedding);
+                            } catch (err) {
+                                // On mismatch (e.g. mixed dims), nullify to re-embed later
+                                this.db.prepare('UPDATE chunks SET embedding = NULL WHERE id = ?').run(row.id);
+                            }
                         }
-                    }
-                });
-                migrateAll();
-                console.log(`[DatabaseManager] Migrated ${chunkRows.length} chunk embeddings to vec_chunks`);
+                    });
+                    migrateAll();
+                    console.log(`[DatabaseManager] Migrated ${chunkRows.length} chunk embeddings to ${chunksTable}`);
+                }
             }
         } catch (e) {
             console.error('[DatabaseManager] Failed to migrate chunk embeddings:', e);
@@ -505,25 +506,26 @@ export class DatabaseManager {
 
         // Migrate summary embeddings
         try {
-            const summaryRows = this.db.prepare(
-                'SELECT id, embedding FROM chunk_summaries WHERE embedding IS NOT NULL'
-            ).all() as any[];
+            const summaryRows = this.db.prepare('SELECT id, embedding FROM chunk_summaries WHERE embedding IS NOT NULL').all() as any[];
 
             if (summaryRows.length > 0) {
-                const insert = this.db.prepare(
-                    'INSERT OR IGNORE INTO vec_summaries(summary_id, embedding) VALUES (?, ?)'
-                );
-                const migrateAll = this.db.transaction(() => {
-                    for (const row of summaryRows) {
-                        try {
-                            insert.run(row.id, row.embedding);
-                        } catch (err) {
-                            this.db.prepare('UPDATE chunk_summaries SET embedding = NULL WHERE id = ?').run(row.id);
+                const { summariesTable } = this.findExistingVecTables();
+                if (!summariesTable) {
+                    console.warn('[DatabaseManager] No vec_summaries table available to migrate summary embeddings');
+                } else {
+                    const insert = this.db.prepare(`INSERT OR IGNORE INTO ${summariesTable}(summary_id, embedding) VALUES (?, ?)`);
+                    const migrateAll = this.db.transaction(() => {
+                        for (const row of summaryRows) {
+                            try {
+                                insert.run(row.id, row.embedding);
+                            } catch (err) {
+                                this.db.prepare('UPDATE chunk_summaries SET embedding = NULL WHERE id = ?').run(row.id);
+                            }
                         }
-                    }
-                });
-                migrateAll();
-                console.log(`[DatabaseManager] Migrated ${summaryRows.length} summary embeddings to vec_summaries`);
+                    });
+                    migrateAll();
+                    console.log(`[DatabaseManager] Migrated ${summaryRows.length} summary embeddings to ${summariesTable}`);
+                }
             }
         } catch (e) {
             console.error('[DatabaseManager] Failed to migrate summary embeddings:', e);
@@ -574,14 +576,35 @@ export class DatabaseManager {
     }
 
     /**
+     * Find any existing vec per-dimension table names in the DB.
+     * Returns first-found pair or nulls when none exist.
+     */
+    private findExistingVecTables(): { chunksTable: string | null; summariesTable: string | null } {
+        if (!this.db) return { chunksTable: null, summariesTable: null };
+        try {
+            const chunkRow = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'vec_chunks_%' LIMIT 1").get() as any;
+            const summaryRow = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'vec_summaries_%' LIMIT 1").get() as any;
+
+            // Cast fallback queries to `any` to avoid TS 'unknown' on .get()
+            const fallbackChunkRow = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='vec_chunks' LIMIT 1").get() as any;
+            const fallbackSummaryRow = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='vec_summaries' LIMIT 1").get() as any;
+
+            const chunksTable = chunkRow?.name || fallbackChunkRow?.name || null;
+            const summariesTable = summaryRow?.name || fallbackSummaryRow?.name || null;
+            return { chunksTable, summariesTable };
+        } catch (e) {
+            return { chunksTable: null, summariesTable: null };
+        }
+    }
+
+    /**
      * Check if sqlite-vec is available (any per-dimension vec0 table must exist)
      */
     public hasVecExtension(): boolean {
         if (!this.db) return false;
         try {
-            // Check the most common dimension (Ollama 768); any may suffice
-            this.db.prepare("SELECT count(*) FROM vec_chunks_768 LIMIT 1").get();
-            return true;
+            const { chunksTable } = this.findExistingVecTables();
+            return !!chunksTable;
         } catch (e) {
             return false;
         }

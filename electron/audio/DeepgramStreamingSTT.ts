@@ -12,10 +12,13 @@
 import { EventEmitter } from 'events';
 import WebSocket from 'ws';
 import { RECOGNITION_LANGUAGES } from '../config/languages';
+import { resampleTo16kMonoLinear16 } from './Resampler';
 
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
 const KEEPALIVE_INTERVAL_MS = 5000;
+const TARGET_SAMPLE_RATE = 16000; // Centralized output rate (16kHz mono Linear16)
+const MAX_RECONNECT_ATTEMPTS = 10;
 
 export class DeepgramStreamingSTT extends EventEmitter {
     private apiKey: string;
@@ -121,8 +124,17 @@ export class DeepgramStreamingSTT extends EventEmitter {
     public write(chunk: Buffer): void {
         if (!this.isActive) return;
 
+        // Resample to canonical 16 kHz mono Linear16 before sending
+        let resampled: Buffer;
+        try {
+            resampled = resampleTo16kMonoLinear16(chunk, this.sampleRate, this.numChannels);
+        } catch (e) {
+            console.warn('[DeepgramStreaming] Resample failed, falling back to raw chunk', e);
+            resampled = chunk;
+        }
+
         if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-            this.buffer.push(chunk);
+            this.buffer.push(resampled);
             if (this.buffer.length > 500) this.buffer.shift(); // Cap buffer size
             
             if (!this.isConnecting && this.shouldReconnect && !this.reconnectTimer) {
@@ -132,7 +144,7 @@ export class DeepgramStreamingSTT extends EventEmitter {
             return;
         }
 
-        this.ws.send(chunk);
+        this.ws.send(resampled);
     }
 
     // =========================================================================
@@ -147,8 +159,8 @@ export class DeepgramStreamingSTT extends EventEmitter {
             `wss://api.deepgram.com/v1/listen` +
             `?model=nova-3` +
             `&encoding=linear16` +
-            `&sample_rate=${this.sampleRate}` +
-            `&channels=${this.numChannels}` +
+            `&sample_rate=${TARGET_SAMPLE_RATE}` + // We resample client-side to 16k
+            `&channels=1` +
             `&language=${this.languageCode}` +
             `&smart_format=true` +
             `&interim_results=true` +
@@ -225,12 +237,19 @@ export class DeepgramStreamingSTT extends EventEmitter {
 
     private scheduleReconnect(): void {
         if (!this.shouldReconnect) return;
+        // Enforce a maximum retry budget to avoid infinite reconnect loops
+        this.reconnectAttempts++;
+        if (this.reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+            console.error('[DeepgramStreaming] Max reconnect attempts exceeded. Giving up.');
+            this.shouldReconnect = false;
+            this.emit('error', new Error('DeepgramStreaming: max reconnect attempts exceeded'));
+            return;
+        }
 
         const delay = Math.min(
-            RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts),
+            RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1),
             RECONNECT_MAX_DELAY_MS
         );
-        this.reconnectAttempts++;
 
         console.log(`[DeepgramStreaming] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`);
 

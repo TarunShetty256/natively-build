@@ -402,13 +402,19 @@ export class ScreenshotHelper {
 
     try {
       console.log('[ScreenshotHelper] Capturing screen with desktopCapturer...');
-      
+
+      // Platform-specific short delay on macOS allows the compositor to settle
+      // and avoids artifacts when capturing immediately after UI changes.
+      if (process.platform === 'darwin') {
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+
       // Get thumbnail size matching the target display's resolution
       const thumbnailSize = {
         width: Math.round(displayBounds.width * scaleFactor),
         height: Math.round(displayBounds.height * scaleFactor)
       };
-      
+
       sources = await desktopCapturer.getSources({
         types: ['screen'],
         thumbnailSize

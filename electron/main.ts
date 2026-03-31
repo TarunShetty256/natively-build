@@ -823,11 +823,9 @@ export class AppState {
 
     stt.setRecognitionLanguage(sttLanguage);
 
-    // Wire Transcript Events
-    stt.on('transcript', (segment: { text: string, isFinal: boolean, confidence: number }) => {
-      if (!this.isMeetingActive) {
-        return;
-      }
+    // Handlers are factored out so we can re-attach them to a fallback provider
+    const handleTranscript = (segment: { text: string, isFinal: boolean, confidence: number }) => {
+      if (!this.isMeetingActive) return;
 
       this.intelligenceManager.handleTranscript({
         speaker: speaker,
@@ -839,33 +837,75 @@ export class AppState {
 
       // Feed final transcript to JIT RAG indexer
       if (segment.isFinal && this.ragManager) {
-        this.ragManager.feedLiveTranscript([{
-          speaker: speaker,
-          text: segment.text,
-          timestamp: Date.now()
-        }]);
+        this.ragManager.feedLiveTranscript([{ speaker, text: segment.text, timestamp: Date.now() }]);
       }
 
       const helper = this.getWindowHelper();
-      const payload = {
-        speaker: speaker,
-        text: segment.text,
-        timestamp: Date.now(),
-        final: segment.isFinal,
-        confidence: segment.confidence
-      };
+      const payload = { speaker, text: segment.text, timestamp: Date.now(), final: segment.isFinal, confidence: segment.confidence };
       helper.getLauncherWindow()?.webContents.send('native-audio-transcript', payload);
       helper.getOverlayWindow()?.webContents.send('native-audio-transcript', payload);
 
-      // Feed final recruiter (system audio) transcripts to negotiation tracker
       if (segment.isFinal && speaker === 'interviewer') {
         this.knowledgeOrchestrator?.feedInterviewerUtterance?.(segment.text);
       }
-    });
+    };
 
-    stt.on('error', (err: Error) => {
+    const handleError = (err: Error) => {
       console.error(`[Main] STT (${speaker}) Error:`, err);
-    });
+    };
+
+    // Fatal handler: GoogleSTT will emit 'fatal_error' for unrecoverable auth/config errors.
+    // When received, stop the current provider, remove listeners and switch to Deepgram (if available).
+    const handleFatal = (err: Error) => {
+      // Ensure the exact message is logged for visibility
+      console.warn('[Main] Google STT failed → switching to Deepgram');
+
+      // Detach our listeners from the failing provider to avoid leaks
+      try {
+        stt.removeListener('transcript', handleTranscript);
+        stt.removeListener('error', handleError);
+        stt.removeListener('fatal_error', handleFatal);
+      } catch {}
+
+      // Safely stop the failing provider if possible
+      try { (stt as any).stop?.(); } catch {}
+
+      // If we already have Deepgram configured for this role, do nothing
+      if (stt instanceof DeepgramStreamingSTT) return;
+
+      // Attempt to switch to Deepgram if a key is available
+      const deepgramKey = CredentialsManager.getInstance().getDeepgramApiKey();
+      if (!deepgramKey) {
+        console.warn('[Main] Cannot switch to Deepgram: no API key available');
+        return;
+      }
+
+      // Create Deepgram provider and attach the same handlers so behavior is preserved
+      const dg = new DeepgramStreamingSTT(deepgramKey);
+      dg.setRecognitionLanguage(sttLanguage);
+      dg.on('transcript', handleTranscript);
+      dg.on('error', handleError);
+
+      // Configure rates/channels for the current capture source
+      const sampleRate = speaker === 'interviewer' ? (this.systemAudioCapture?.getSampleRate() || 48000) : (this.microphoneCapture?.getSampleRate() || 48000);
+      dg.setSampleRate(sampleRate);
+      dg.setAudioChannelCount?.(1);
+
+      // Start Deepgram immediately so it can accept buffered audio
+      dg.start?.();
+
+      // Replace the active provider reference so capture pipelines write to new provider
+      if (speaker === 'interviewer') {
+        this.googleSTT = dg as any;
+      } else {
+        this.googleSTT_User = dg as any;
+      }
+    };
+
+    // Attach handlers to the freshly created provider
+    stt.on('transcript', handleTranscript);
+    stt.on('error', handleError);
+    stt.on('fatal_error', handleFatal);
 
     return stt;
   }

@@ -2,6 +2,9 @@ import { SpeechClient } from '@google-cloud/speech';
 import { EventEmitter } from 'events';
 import * as path from 'path';
 import { RECOGNITION_LANGUAGES, EnglishVariant } from '../config/languages';
+import { resampleTo16kMonoLinear16 } from './Resampler';
+
+const TARGET_SAMPLE_RATE = 16000; // Canonical STT input rate
 
 /**
  * GoogleSTT
@@ -17,6 +20,11 @@ export class GoogleSTT extends EventEmitter {
     private stream: any = null; // Stream type is complex in google-cloud libs
     private isStreaming = false;
     private isActive = false;
+    private hasCredentials = false;
+
+    // Optional proactive restart timer (disabled by default)
+    private proactiveRestartIntervalMs: number = 0;
+    private proactiveRestartTimer: NodeJS.Timeout | null = null;
 
     // Config
     private encoding = 'LINEAR16' as const;
@@ -32,6 +40,7 @@ export class GoogleSTT extends EventEmitter {
         // Note: In production, credentials are set by main.ts via process.env.GOOGLE_APPLICATION_CREDENTIALS
         // or passed explicitly to setCredentials(). We do not load .env files here to avoid ASAR path issues.
         const credentialsPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+        this.hasCredentials = !!credentialsPath;
         if (!credentialsPath) {
             console.error('[GoogleSTT] Missing GOOGLE_APPLICATION_CREDENTIALS in environment. Checked CWD:', process.cwd());
         } else {
@@ -41,6 +50,24 @@ export class GoogleSTT extends EventEmitter {
         this.client = new SpeechClient({
             keyFilename: credentialsPath
         });
+    }
+
+    private isFatalAuthError(err: Error): boolean {
+        if (!err) return false;
+        const msg = (err as any).message ? String((err as any).message).toLowerCase() : String(err).toLowerCase();
+        // Treat missing creds / permission / auth errors as fatal so callers can fallback
+        const fatalIndicators = [
+            'could not load the default credentials',
+            'no such file',
+            'enoent',
+            'permission denied',
+            'permission_denied',
+            'unauthenticated',
+            'invalid_grant',
+            '401',
+            'credentials'
+        ];
+        return fatalIndicators.some(ind => msg.includes(ind));
     }
 
     public setCredentials(keyFilePath: string): void {
@@ -59,6 +86,36 @@ export class GoogleSTT extends EventEmitter {
             console.warn('[GoogleSTT] Config changed while active. Restarting stream...');
             this.stop();
             this.start();
+        }
+    }
+
+    /**
+     * Enable or change a proactive restart interval (ms). Set 0 to disable.
+     */
+    public setProactiveRestartInterval(ms: number): void {
+        this.proactiveRestartIntervalMs = Math.max(0, Math.floor(ms));
+        if (this.isActive) this.scheduleProactiveRestart();
+    }
+
+    private scheduleProactiveRestart(): void {
+        this.clearProactiveRestartTimer();
+        if (!this.proactiveRestartIntervalMs || !this.isActive) return;
+        this.proactiveRestartTimer = setTimeout(() => {
+            console.log('[GoogleSTT] Proactive restart triggered');
+            try {
+                // Gracefully restart the stream
+                this.stop();
+                this.start();
+            } catch (e) {
+                console.warn('[GoogleSTT] Proactive restart failed:', e);
+            }
+        }, this.proactiveRestartIntervalMs);
+    }
+
+    private clearProactiveRestartTimer(): void {
+        if (this.proactiveRestartTimer) {
+            clearTimeout(this.proactiveRestartTimer);
+            this.proactiveRestartTimer = null;
         }
     }
 
@@ -130,6 +187,15 @@ export class GoogleSTT extends EventEmitter {
         this.isActive = true;
 
         console.log('[GoogleSTT] Starting recognition stream...');
+        // If we don't have credentials, emit a fatal_error so the app can fallback gracefully
+        if (!this.hasCredentials) {
+            const err = new Error('GoogleSTT: missing GOOGLE_APPLICATION_CREDENTIALS');
+            console.error('[GoogleSTT] Fatal: missing credentials. Emitting fatal_error');
+            // Emit a dedicated fatal_error event for the controller to switch providers
+            this.emit('fatal_error', err);
+            return;
+        }
+
         this.startStream();
     }
 
@@ -139,6 +205,7 @@ export class GoogleSTT extends EventEmitter {
         console.log('[GoogleSTT] Stopping stream...');
         this.isActive = false;
         this.isStreaming = false;
+        this.clearProactiveRestartTimer();
         if (this.stream) {
             this.stream.end();
             this.stream.destroy();
@@ -184,15 +251,24 @@ export class GoogleSTT extends EventEmitter {
         }
 
         try {
+            // Resample to canonical 16kHz mono before sending
+            let payload = audioData;
+            try {
+                payload = resampleTo16kMonoLinear16(audioData, this.sampleRateHertz, this.audioChannelCount);
+            } catch (e) {
+                console.warn('[GoogleSTT] Resample failed, sending raw chunk', e);
+                payload = audioData;
+            }
+
             // Debug log every ~50th write to avoid spam
             if (Math.random() < 0.02) {
-                console.log(`[GoogleSTT] Writing ${audioData.length} bytes to stream`);
+                console.log(`[GoogleSTT] Writing ${payload.length} bytes to stream`);
             }
 
             if (this.stream.command && this.stream.command.writable) {
-                this.stream.write(audioData);
+                this.stream.write(payload);
             } else if (this.stream.writable) {
-                this.stream.write(audioData);
+                this.stream.write(payload);
             } else {
                 console.warn('[GoogleSTT] Stream not writable!');
             }
@@ -226,7 +302,7 @@ export class GoogleSTT extends EventEmitter {
             .streamingRecognize({
                 config: {
                     encoding: this.encoding,
-                    sampleRateHertz: this.sampleRateHertz,
+                    sampleRateHertz: TARGET_SAMPLE_RATE, // Use canonical 16k on the server side
                     audioChannelCount: this.audioChannelCount,
                     languageCode: this.languageCode,
                     enableAutomaticPunctuation: true,
@@ -238,7 +314,13 @@ export class GoogleSTT extends EventEmitter {
             })
             .on('error', (err: Error) => {
                 console.error('[GoogleSTT] Stream error:', err);
-                this.emit('error', err);
+                // Distinguish fatal auth/config errors from transient errors
+                if (this.isFatalAuthError(err)) {
+                    console.error('[GoogleSTT] Detected fatal auth/config error; emitting fatal_error');
+                    this.emit('fatal_error', err);
+                } else {
+                    this.emit('error', err);
+                }
                 this.isConnecting = false;
                 this.isStreaming = false;
                 this.stream = null;
@@ -273,11 +355,14 @@ export class GoogleSTT extends EventEmitter {
                 }
             });
 
-        // Initialize writeable check or wait for 'open'? 
+        // Initialize writeable check or wait for 'open'?
         // gRPC streams are usually writeable immediately.
         // We can flush immediately after creation.
         this.isConnecting = false;
         this.flushBuffer();
+
+        // Schedule optional proactive restart if enabled
+        this.scheduleProactiveRestart();
 
         console.log('[GoogleSTT] Stream created. Waiting for events...');
     }

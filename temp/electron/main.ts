@@ -1794,7 +1794,7 @@ export class AppState {
 
     const contextMenu = Menu.buildFromTemplate([
       {
-        label: 'Show Natively',
+        label: 'Show TeamSync',
         click: () => {
           this.centerAndShowWindow()
         }
@@ -1975,7 +1975,7 @@ export class AppState {
   }
 
   private _applyDisguise(mode: 'terminal' | 'settings' | 'activity' | 'none'): void {
-    let appName = "Natively";
+    let appName = "TeamSync";
     let iconPath = "";
 
     const isWin = process.platform === 'win32';

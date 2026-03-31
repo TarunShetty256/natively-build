@@ -6,10 +6,9 @@ import fs from "fs"
 import sharp from "sharp"
 import { ModelVersionManager, ModelFamily, TextModelFamily } from './services/ModelVersionManager'
 import {
-  HARD_SYSTEM_PROMPT, GROQ_SYSTEM_PROMPT, OPENAI_SYSTEM_PROMPT, CLAUDE_SYSTEM_PROMPT,
   UNIVERSAL_SYSTEM_PROMPT, UNIVERSAL_ANSWER_PROMPT, UNIVERSAL_WHAT_TO_ANSWER_PROMPT,
   UNIVERSAL_RECAP_PROMPT, UNIVERSAL_FOLLOWUP_PROMPT, UNIVERSAL_FOLLOW_UP_QUESTIONS_PROMPT, UNIVERSAL_ASSIST_PROMPT,
-  CUSTOM_SYSTEM_PROMPT, CUSTOM_ANSWER_PROMPT, CUSTOM_WHAT_TO_ANSWER_PROMPT,
+  CUSTOM_ANSWER_PROMPT, CUSTOM_WHAT_TO_ANSWER_PROMPT,
   CUSTOM_RECAP_PROMPT, CUSTOM_FOLLOWUP_PROMPT, CUSTOM_FOLLOW_UP_QUESTIONS_PROMPT, CUSTOM_ASSIST_PROMPT
 } from "./llm/prompts"
 import { deepVariableReplacer, getByPath, injectImageIntoMessages } from './utils/curlUtils';
@@ -37,6 +36,65 @@ const CLAUDE_MAX_OUTPUT_TOKENS = 64000
 
 // Simple prompt for image analysis (not interview copilot - kept separate)
 const IMAGE_ANALYSIS_PROMPT = `Analyze concisely. Be direct. No markdown formatting. Return plain text only.`
+
+// User-provided system prompt (always prepended to every LLM call)
+const SYSTEM_PROMPT = `You are a real-time AI assistant acting as a confident human candidate in interviews and meetings.
+
+Your primary goal:
+Deliver clear, natural, and effective answers that help the user succeed.
+
+Core Behavior:
+
+* Always sound like a real human, never like an AI.
+* Keep answers concise (1–4 sentences unless coding is required).
+* Be confident, direct, and relevant.
+* Avoid repetition, filler words, and generic responses.
+
+Adaptive Response Modes:
+
+* Behavioral → Use concise STAR format
+* Technical → Explain approach + give optimal code + complexity
+* Follow-up → Continue naturally, no repetition
+* Clarification → Short, precise answer
+* Example → One strong realistic example
+
+Failure Handling:
+
+* Always give a logical answer even if context is missing
+* Never say "I don’t know" or "repeat that"
+`;
+
+function combineSystemText(extra?: string) {
+  return extra
+    ? `${SYSTEM_PROMPT}\n\n[ADDITIONAL CONTEXT]\n${extra}`
+    : SYSTEM_PROMPT;
+}
+
+function prependSystemToMessages(messages: any[], extraSystem?: string) {
+  let sys: string;
+  if (!extraSystem) {
+    sys = combineSystemText();
+  } else {
+    // If caller already provided a fully-formed system block (contains SYSTEM_PROMPT),
+    // use it verbatim to avoid duplicating the canonical SYSTEM_PROMPT.
+    if (extraSystem.includes(SYSTEM_PROMPT)) {
+      sys = extraSystem;
+    } else {
+      sys = combineSystemText(extraSystem);
+    }
+  }
+  return [{ role: 'system', content: sys }, ...messages];
+}
+
+function ensureGeminiContents(contents: any[], extraSystem?: string) {
+  const sys = combineSystemText(extraSystem);
+  if (!contents || contents.length === 0) return [{ role: 'system', parts: [{ text: sys }] }];
+  const first = contents[0];
+  if (first?.role === 'system') return contents;
+  // If first part already contains the system text, skip
+  if (typeof first.text === 'string' && first.text.startsWith(SYSTEM_PROMPT)) return contents;
+  return [{ role: 'system', parts: [{ text: sys }] }, ...contents];
+}
 
 export class LLMHelper {
   private client: GoogleGenAI | null = null
@@ -438,6 +496,34 @@ export class LLMHelper {
   }
 
   /**
+   * Execute a provider function with a hard timeout and limited retries.
+   * Keeps the external API surface unchanged while adding per-provider
+   * protections against long-hanging providers.
+   */
+  private async executeWithTimeoutAndRetry(fn: () => Promise<string>, timeoutMs: number = 30000, maxRetries: number = 3): Promise<string> {
+    let lastErr: any = null;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const p = fn();
+        const result = await Promise.race([
+          p,
+          new Promise<string>((_, reject) => setTimeout(() => reject(new Error('Timed out')), timeoutMs))
+        ]);
+        return result;
+      } catch (err: any) {
+        lastErr = err;
+        if (attempt < maxRetries) {
+          const backoff = 200 * Math.pow(2, attempt - 1);
+          console.warn(`[LLMHelper] Provider attempt ${attempt} failed: ${err?.message || err}. Retrying after ${backoff}ms`);
+          await this.delay(backoff);
+          continue;
+        }
+      }
+    }
+    throw lastErr || new Error('Provider failed after retries');
+  }
+
+  /**
    * Generate content using the currently selected model
    */
   private async generateContent(contents: any[], modelIdOverride?: string): Promise<string> {
@@ -445,6 +531,9 @@ export class LLMHelper {
 
     const targetModel = modelIdOverride || this.geminiModel;
     console.log(`[LLMHelper] Calling ${targetModel}...`)
+
+    // Ensure the canonical SYSTEM_PROMPT is present in Gemini contents
+    contents = ensureGeminiContents(contents);
 
     return this.withRetry(async () => {
       // @ts-ignore
@@ -663,7 +752,7 @@ CRITICAL RULES:
   public async analyzeImageFiles(imagePaths: string[]) {
     try {
       const prompt = `Describe the content of ${imagePaths.length > 1 ? 'these images' : 'this image'} in a short, concise answer. If it contains code or a problem, solve it.`;
-      const text = await this.generateWithVisionFallback(HARD_SYSTEM_PROMPT, prompt, imagePaths);
+      const text = await this.generateWithVisionFallback(SYSTEM_PROMPT, prompt, imagePaths);
 
       return { text: text, timestamp: Date.now() };
 
@@ -684,27 +773,9 @@ CRITICAL RULES:
    * @returns Suggested response for the user
    */
   public async generateSuggestion(context: string, lastQuestion: string): Promise<string> {
-    const basePrompt = `You are an expert interview coach. Based on the conversation transcript, provide a concise, natural response the user could say.
+    const basePrompt = SYSTEM_PROMPT + `\n\nAdditional instruction:\nProvide a short, natural response based on the conversation.`;
 
-RULES:
-- Be direct and conversational
-- Keep responses under 3 sentences unless complexity requires more  
-- Focus on answering the specific question asked
-- If it's a technical question, provide a clear, structured answer
-- Do NOT preface with "You could say" or similar - just give the answer directly
-- If unsure, answer briefly and confidently anyway.
-- Never hedge.
-- Never say "it depends".
-
-CONVERSATION SO FAR:
-${context}
-
-LATEST QUESTION FROM INTERVIEWER:
-${lastQuestion}
-
-ANSWER DIRECTLY:`;
-
-    // Apply language instruction so this path honurs the user's language setting
+    // Apply language instruction so this path honors the user's language setting
     const systemPrompt = this.injectLanguageInstruction(basePrompt);
 
     try {
@@ -793,7 +864,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
           // Feed only to the depth scorer — NOT feedInterviewerUtterance, which also routes to the
           // negotiation tracker and would misclassify the user's typed question as a recruiter utterance.
           // Recruiter utterances reach the tracker exclusively via the STT path in main.ts.
-          this.knowledgeOrchestrator.feedForDepthScoring(message);
+          this.knowledgeOrchestrator.feedForDepthScoring(message.trim());
 
           const knowledgeResult = await this.knowledgeOrchestrator.processQuestion(message);
           if (knowledgeResult) {
@@ -841,19 +912,19 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         ? `CONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
         : message;
 
-      const finalGeminiPrompt = this.injectLanguageInstruction(HARD_SYSTEM_PROMPT);
-      const finalGroqPrompt = alternateGroqMessage || this.injectLanguageInstruction(GROQ_SYSTEM_PROMPT);
+      const baseSystem = this.injectLanguageInstruction(SYSTEM_PROMPT);
+      const finalGeminiPrompt = baseSystem;
+      const finalGroqPrompt = alternateGroqMessage || baseSystem;
 
       const combinedMessages = {
         gemini: buildMessage(finalGeminiPrompt),
-        groq: buildMessage(finalGroqPrompt),
       };
 
       // GROQ FAST TEXT OVERRIDE (Text-Only)
       if (this.groqFastTextMode && !isMultimodal && this.groqClient) {
         console.log(`[LLMHelper] ⚡️ Groq Fast Text Mode Active. Routing to Groq...`);
         try {
-          return await this.generateWithGroq(combinedMessages.groq);
+          return await this.generateWithGroq(userContent, finalGroqPrompt);
         } catch (e: any) {
           console.warn("[LLMHelper] Groq Fast Text failed, falling back to standard routing:", e.message);
           // Fall through to standard routing
@@ -861,21 +932,21 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
 
       // System prompts for OpenAI/Claude (skipped if skipSystemPrompt)
-      const openaiSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(OPENAI_SYSTEM_PROMPT);
-      const claudeSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(CLAUDE_SYSTEM_PROMPT);
+      const openaiSystemPrompt = skipSystemPrompt ? undefined : baseSystem;
+      const claudeSystemPrompt = skipSystemPrompt ? undefined : baseSystem;
 
       if (this.useOllama) {
         return await this.callOllama(combinedMessages.gemini, imagePaths?.[0]);
       }
 
       if (this.activeCurlProvider) {
-        return await this.chatWithCurl(message, skipSystemPrompt ? undefined : this.injectLanguageInstruction(CUSTOM_SYSTEM_PROMPT), imagePaths?.[0]);
+        return await this.chatWithCurl(message, skipSystemPrompt ? undefined : this.injectLanguageInstruction(SYSTEM_PROMPT), imagePaths?.[0]);
       }
 
       if (this.customProvider) {
         console.log(`[LLMHelper] Using Custom Provider: ${this.customProvider.name}`);
-        // For non-streaming call — use rich CUSTOM prompts since custom providers can be cloud models
-        const customSystemPrompt = skipSystemPrompt ? "" : this.injectLanguageInstruction(CUSTOM_SYSTEM_PROMPT);
+        // For non-streaming call — use canonical SYSTEM_PROMPT for custom providers
+        const customSystemPrompt = skipSystemPrompt ? "" : this.injectLanguageInstruction(SYSTEM_PROMPT);
         const response = await this.executeCustomProvider(
           this.customProvider.curlCommand,
           combinedMessages.gemini,
@@ -896,9 +967,9 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
       if (this.isGroqModel(this.currentModelId) && this.groqClient) {
         if (isMultimodal && imagePaths) {
-          return await this.generateWithGroqMultimodal(userContent, imagePaths, openaiSystemPrompt);
+          return await this.generateWithGroqMultimodal(userContent, imagePaths, finalGroqPrompt);
         }
-        return await this.generateWithGroq(combinedMessages.groq);
+        return await this.generateWithGroq(userContent, finalGroqPrompt);
       }
 
       // Fallback (Gemini) - logic handled below by SMART DYNAMIC FALLBACK list
@@ -942,13 +1013,13 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         if (this.groqClient) {
           providers.push({
             name: `Groq (meta-llama/llama-4-scout-17b-16e-instruct)`,
-            execute: () => this.generateWithGroqMultimodal(userContent, imagePaths!, openaiSystemPrompt)
+            execute: () => this.generateWithGroqMultimodal(userContent, imagePaths!, finalGroqPrompt)
           });
         }
       } else {
         // TEXT-ONLY: All providers including Groq
         if (this.groqClient) {
-          providers.push({ name: `Groq (${textGroq})`, execute: () => this.generateWithGroq(combinedMessages.groq) });
+          providers.push({ name: `Groq (${textGroq})`, execute: () => this.generateWithGroq(userContent, finalGroqPrompt) });
         }
         if (this.client) {
           providers.push({
@@ -1114,12 +1185,16 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       for (const provider of providers) {
         try {
           console.log(`[LLMHelper] 🧠 Structured generation: trying ${provider.name}...`);
-          const result = await provider.execute();
-          if (result && result.trim().length > 0) {
-            console.log(`[LLMHelper] ✅ Structured generation succeeded with ${provider.name}`);
-            return result;
+          try {
+            const result = await this.executeWithTimeoutAndRetry(() => provider.execute(), 30000, 3);
+            if (result && result.trim().length > 0) {
+              console.log(`[LLMHelper] ✅ Structured generation succeeded with ${provider.name}`);
+              return result;
+            }
+            console.warn(`[LLMHelper] ⚠️ ${provider.name} returned empty response`);
+          } catch (innerErr: any) {
+            console.warn(`[LLMHelper] ⚠️ Structured generation: ${provider.name} failed: ${innerErr?.message || innerErr}`);
           }
-          console.warn(`[LLMHelper] ⚠️ ${provider.name} returned empty response`);
         } catch (error: any) {
           console.warn(`[LLMHelper] ⚠️ Structured generation: ${provider.name} failed: ${error.message}`);
         }
@@ -1129,15 +1204,19 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     throw new Error('All reasoning models failed for structured generation after 3 attempts');
   }
 
-  private async generateWithGroq(fullMessage: string): Promise<string> {
+  private async generateWithGroq(userMessage: string, systemPrompt?: string): Promise<string> {
     if (!this.groqClient) throw new Error("Groq client not initialized");
 
     await this.rateLimiters.groq.acquire();
 
-    // Non-streaming Groq call
+    // Default systemPrompt to canonical SYSTEM_PROMPT if not provided
+    const finalSystem = systemPrompt || this.injectLanguageInstruction(SYSTEM_PROMPT);
+
+    // Non-streaming Groq call — use prependSystemToMessages to ensure single system role
+    const messages = prependSystemToMessages([{ role: "user", content: userMessage }], finalSystem);
     const response = await this.groqClient.chat.completions.create({
       model: GROQ_MODEL,
-      messages: [{ role: "user", content: fullMessage }],
+      messages,
       temperature: 0.4,
       max_tokens: 8192,
       stream: false
@@ -1157,10 +1236,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // Use explicit override, then current model if it's OpenAI, else baseline constant
     const model = modelId || (this.isOpenAiModel(this.currentModelId) ? this.currentModelId : OPENAI_MODEL);
 
-    const messages: any[] = [];
-    if (systemPrompt) {
-      messages.push({ role: "system", content: systemPrompt });
-    }
+    const messages: any[] = prependSystemToMessages([], systemPrompt);
 
     if (imagePaths?.length) {
       const contentParts: any[] = [{ type: "text", text: userMessage }];
@@ -1206,8 +1282,8 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     }
 
     // 3. Prepare Variables
-    // We combine System Prompt + User Message into {{TEXT}} for simplicity in raw mode.
-    const fullPrompt = systemPrompt ? `${systemPrompt}\n\n${userMessage}` : userMessage;
+    // We combine SYSTEM_PROMPT + optional systemPrompt + User Message into {{TEXT}} for simplicity in raw mode.
+    const fullPrompt = `${combineSystemText(systemPrompt)}\n\n${userMessage}`;
 
     const variables = {
       TEXT: fullPrompt.replace(/\n/g, "\\n").replace(/"/g, '\\"'), // Basic escaping (pre-existing)
@@ -1277,10 +1353,13 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     }
     content.push({ type: "text", text: userMessage });
 
+    const combinedSystem = systemPrompt && systemPrompt.includes(SYSTEM_PROMPT)
+      ? systemPrompt
+      : combineSystemText(systemPrompt);
     const response = await this.claudeClient.messages.create({
       model,
       max_tokens: CLAUDE_MAX_OUTPUT_TOKENS,
-      ...(systemPrompt ? { system: systemPrompt } : {}),
+      system: combinedSystem,
       messages: [{ role: "user", content }],
     });
 
@@ -1401,7 +1480,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
    */
   private mapToCustomPrompt(prompt: string): string {
     // Map from concise UNIVERSAL to rich CUSTOM equivalents
-    if (prompt === UNIVERSAL_SYSTEM_PROMPT || prompt === HARD_SYSTEM_PROMPT) return CUSTOM_SYSTEM_PROMPT;
+    if (prompt === UNIVERSAL_SYSTEM_PROMPT || prompt === SYSTEM_PROMPT) return SYSTEM_PROMPT;
     if (prompt === UNIVERSAL_ANSWER_PROMPT) return CUSTOM_ANSWER_PROMPT;
     if (prompt === UNIVERSAL_WHAT_TO_ANSWER_PROMPT) return CUSTOM_WHAT_TO_ANSWER_PROMPT;
     if (prompt === UNIVERSAL_RECAP_PROMPT) return CUSTOM_RECAP_PROMPT;
@@ -1455,12 +1534,6 @@ This rule overrides ALL other instructions including formatting, brevity, or out
    */
   private async generateWithGroqMultimodal(userMessage: string, imagePaths: string[], systemPrompt?: string): Promise<string> {
     if (!this.groqClient) throw new Error("Groq client not initialized");
-
-    const messages: any[] = [];
-    if (systemPrompt) {
-      messages.push({ role: "system", content: systemPrompt });
-    }
-
     const contentParts: any[] = [{ type: "text", text: userMessage }];
     for (const p of imagePaths) {
       if (fs.existsSync(p)) {
@@ -1468,7 +1541,8 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         contentParts.push({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${imageData.toString("base64")}` } });
       }
     }
-    messages.push({ role: "user", content: contentParts });
+
+    const messages = prependSystemToMessages([{ role: "user", content: contentParts }], systemPrompt);
 
     const response = await this.groqClient.chat.completions.create({
       model: "meta-llama/llama-4-scout-17b-16e-instruct",
@@ -1498,6 +1572,11 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     type ProviderAttempt = { name: string; execute: () => Promise<string> };
     const isMultimodal = imagePaths.length > 0;
 
+    // Enforce canonical SYSTEM_PROMPT dominance and apply language override.
+    // finalSystemPrompt will be passed to all downstream providers so that
+    // no provider can override or weaken the SYSTEM_PROMPT behavior.
+    const finalSystemPrompt = this.injectLanguageInstruction(combineSystemText(systemPrompt));
+
     // Helper: build a provider attempt for a given family + model ID
     const buildProviderForFamily = (family: ModelFamily, modelId: string): ProviderAttempt | null => {
       switch (family) {
@@ -1505,7 +1584,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
           if (!this.openaiClient) return null;
           return {
             name: `OpenAI (${modelId})`,
-            execute: () => this.generateWithOpenai(userPrompt, systemPrompt, isMultimodal ? imagePaths : undefined, modelId)
+            execute: () => this.generateWithOpenai(userPrompt, finalSystemPrompt, isMultimodal ? imagePaths : undefined, modelId)
           };
 
         case ModelFamily.GEMINI_FLASH:
@@ -1514,7 +1593,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
             return {
               name: `Gemini Flash (${modelId})`,
               execute: async () => {
-                const contents: any[] = [{ text: `${systemPrompt}\n\n${userPrompt}` }];
+                const contents: any[] = [{ text: `${finalSystemPrompt}\n\n${userPrompt}` }];
                 for (const p of imagePaths) {
                   if (fs.existsSync(p)) {
                     const { mimeType, data } = await this.processImage(p);
@@ -1527,14 +1606,14 @@ This rule overrides ALL other instructions including formatting, brevity, or out
           }
           return {
             name: `Gemini Flash (${modelId})`,
-            execute: () => this.generateContent([{ text: `${systemPrompt}\n\n${userPrompt}` }], modelId)
+            execute: () => this.generateContent([{ text: `${finalSystemPrompt}\n\n${userPrompt}` }], modelId)
           };
 
         case ModelFamily.CLAUDE:
           if (!this.claudeClient) return null;
           return {
             name: `Claude (${modelId})`,
-            execute: () => this.generateWithClaude(userPrompt, systemPrompt, isMultimodal ? imagePaths : undefined, modelId)
+            execute: () => this.generateWithClaude(userPrompt, finalSystemPrompt, isMultimodal ? imagePaths : undefined, modelId)
           };
 
         case ModelFamily.GEMINI_PRO:
@@ -1543,7 +1622,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
             return {
               name: `Gemini Pro (${modelId})`,
               execute: async () => {
-                const contents: any[] = [{ text: `${systemPrompt}\n\n${userPrompt}` }];
+                const contents: any[] = [{ text: `${finalSystemPrompt}\n\n${userPrompt}` }];
                 for (const p of imagePaths) {
                   if (fs.existsSync(p)) {
                     const { mimeType, data } = await this.processImage(p);
@@ -1556,7 +1635,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
           }
           return {
             name: `Gemini Pro (${modelId})`,
-            execute: () => this.generateContent([{ text: `${systemPrompt}\n\n${userPrompt}` }], modelId)
+            execute: () => this.generateContent([{ text: `${finalSystemPrompt}\n\n${userPrompt}` }], modelId)
           };
 
         case ModelFamily.GROQ_LLAMA:
@@ -1564,12 +1643,12 @@ This rule overrides ALL other instructions including formatting, brevity, or out
           if (isMultimodal) {
             return {
               name: `Groq (${modelId})`,
-              execute: () => this.generateWithGroqMultimodal(userPrompt, imagePaths, systemPrompt)
+              execute: () => this.generateWithGroqMultimodal(userPrompt, imagePaths, finalSystemPrompt)
             };
           }
           return {
             name: `Groq (${modelId})`,
-            execute: () => this.generateWithGroq(`${systemPrompt}\n\n${userPrompt}`)
+            execute: () => this.generateWithGroq(userPrompt, finalSystemPrompt)
           };
 
         default:
@@ -1608,8 +1687,8 @@ This rule overrides ALL other instructions including formatting, brevity, or out
           name: `Custom Provider (${this.customProvider.name})`,
           execute: () => this.executeCustomProvider(
             this.customProvider!.curlCommand,
-            `${systemPrompt}\n\n${userPrompt}`,
-            systemPrompt,
+            `${finalSystemPrompt}\n\n${userPrompt}`,
+            finalSystemPrompt,
             userPrompt,
             "",
             imagePaths[0]
@@ -1620,8 +1699,8 @@ This rule overrides ALL other instructions including formatting, brevity, or out
           name: `Custom Provider (${this.customProvider.name})`,
           execute: () => this.executeCustomProvider(
             this.customProvider!.curlCommand,
-            `${systemPrompt}\n\n${userPrompt}`,
-            systemPrompt,
+            `${finalSystemPrompt}\n\n${userPrompt}`,
+            finalSystemPrompt,
             userPrompt,
             ""
           )
@@ -1632,14 +1711,14 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     if (this.activeCurlProvider && !this.customProvider) {
       localProviders.push({
         name: `cURL Provider (${this.activeCurlProvider.name})`,
-        execute: () => this.chatWithCurl(userPrompt, systemPrompt, isMultimodal ? imagePaths[0] : undefined)
+        execute: () => this.chatWithCurl(userPrompt, finalSystemPrompt, isMultimodal ? imagePaths[0] : undefined)
       });
     }
 
     if (this.useOllama) {
       localProviders.push({
         name: `Ollama (${this.ollamaModel})`,
-        execute: () => this.callOllama(`${systemPrompt}\n\n${userPrompt}`, isMultimodal ? imagePaths[0] : undefined)
+        execute: () => this.callOllama(`${finalSystemPrompt}\n\n${userPrompt}`, isMultimodal ? imagePaths[0] : undefined)
       });
     }
 
@@ -1742,10 +1821,13 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       ? `CONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
       : message;
 
+    // Use canonical SYSTEM_PROMPT for streaming as well
+    const baseSystem = this.injectLanguageInstruction(SYSTEM_PROMPT);
+    const finalGroqPrompt = baseSystem;
     const combinedMessages = {
-      gemini: buildCombinedMessage(HARD_SYSTEM_PROMPT),
-      groq: buildCombinedMessage(GROQ_SYSTEM_PROMPT),
+      gemini: buildCombinedMessage(baseSystem),
     };
+    const groqCombinedMessage = buildCombinedMessage(finalGroqPrompt);
 
     if (this.useOllama) {
       const response = await this.callOllama(combinedMessages.gemini, imagePaths?.[0]);
@@ -1764,8 +1846,8 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     const providers: ProviderAttempt[] = [];
 
     // System prompts for OpenAI/Claude (skipped if skipSystemPrompt)
-    const openaiSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(OPENAI_SYSTEM_PROMPT);
-    const claudeSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(CLAUDE_SYSTEM_PROMPT);
+    const openaiSystemPrompt = skipSystemPrompt ? undefined : baseSystem;
+    const claudeSystemPrompt = skipSystemPrompt ? undefined : baseSystem;
 
     // Get auto-discovered text model IDs from ModelVersionManager
     const textOpenAI = this.modelVersionManager.getTextTieredModels(TextModelFamily.OPENAI).tier1;
@@ -1788,13 +1870,13 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       if (this.client) {
         providers.push({ name: `Gemini Pro (${textGeminiPro})`, execute: () => this.streamWithGeminiModel(combinedMessages.gemini, textGeminiPro, imagePaths) });
       }
-      if (this.groqClient) {
-        providers.push({ name: `Groq (meta-llama/llama-4-scout-17b-16e-instruct)`, execute: () => this.streamWithGroqMultimodal(userContent, imagePaths!, openaiSystemPrompt) });
-      }
+        if (this.groqClient) {
+          providers.push({ name: `Groq (meta-llama/llama-4-scout-17b-16e-instruct)`, execute: () => this.streamWithGroqMultimodal(userContent, imagePaths!, finalGroqPrompt) });
+        }
     } else {
       // TEXT-ONLY PROVIDER ORDER: Groq → OpenAI → Claude → Gemini Flash → Gemini Pro
       if (this.groqClient) {
-        providers.push({ name: `Groq (${textGroq})`, execute: () => this.streamWithGroq(combinedMessages.groq) });
+        providers.push({ name: `Groq (${textGroq})`, execute: () => this.streamWithGroq(userContent, finalGroqPrompt) });
       }
       if (this.openaiClient) {
         providers.push({ name: `OpenAI (${textOpenAI})`, execute: () => this.streamWithOpenai(userContent, openaiSystemPrompt, textOpenAI) });
@@ -1871,7 +1953,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     message: string,
     imagePaths?: string[],
     context?: string,
-    systemPromptOverride?: string // Optional override (defaults to HARD_SYSTEM_PROMPT)
+    systemPromptOverride?: string // Optional override (defaults to SYSTEM_PROMPT)
   ): AsyncGenerator<string, void, unknown> {
 
     // ============================================================
@@ -1915,9 +1997,9 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     const isMultimodal = !!(imagePaths?.length);
 
     // Determine the system prompt to use
-    // logic: if override provided, use it. otherwise use HARD_SYSTEM_PROMPT (which is the universal base)
-    const baseSystemPrompt = systemPromptOverride || HARD_SYSTEM_PROMPT;
-    const finalSystemPrompt = this.injectLanguageInstruction(baseSystemPrompt);
+    // logic: if override provided, use it. otherwise use SYSTEM_PROMPT (canonical base)
+    const baseSystemPrompt = systemPromptOverride || SYSTEM_PROMPT;
+    const finalSystemPrompt = combineSystemText(this.injectLanguageInstruction(baseSystemPrompt));
 
     // Helper to build combined user message
     const userContent = context
@@ -1928,10 +2010,9 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     if (this.groqFastTextMode && !isMultimodal && this.groqClient) {
       console.log(`[LLMHelper] ⚡️ Groq Fast Text Mode Active (Streaming). Routing to Groq...`);
       try {
-        const groqSystem = systemPromptOverride || GROQ_SYSTEM_PROMPT;
+        const groqSystem = systemPromptOverride || SYSTEM_PROMPT;
         const finalGroqSystem = this.injectLanguageInstruction(groqSystem);
-        const groqFullMessage = `${finalGroqSystem}\n\n${userContent}`;
-        yield* this.streamWithGroq(groqFullMessage);
+        yield* this.streamWithGroq(userContent, finalGroqSystem);
         return;
       } catch (e: any) {
         console.warn("[LLMHelper] Groq Fast Text streaming failed, falling back:", e.message);
@@ -1969,7 +2050,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     // OpenAI
     if (this.isOpenAiModel(this.currentModelId) && this.openaiClient) {
-      const openAiSystem = systemPromptOverride || OPENAI_SYSTEM_PROMPT;
+      const openAiSystem = systemPromptOverride || SYSTEM_PROMPT;
       const finalOpenAiSystem = this.injectLanguageInstruction(openAiSystem);
       if (isMultimodal && imagePaths) {
         yield* this.streamWithOpenaiMultimodal(userContent, imagePaths, finalOpenAiSystem);
@@ -1981,7 +2062,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     // Claude
     if (this.isClaudeModel(this.currentModelId) && this.claudeClient) {
-      const claudeSystem = systemPromptOverride || CLAUDE_SYSTEM_PROMPT;
+      const claudeSystem = systemPromptOverride || SYSTEM_PROMPT;
       const finalClaudeSystem = this.injectLanguageInstruction(claudeSystem);
       if (isMultimodal && imagePaths) {
         yield* this.streamWithClaudeMultimodal(userContent, imagePaths, finalClaudeSystem);
@@ -1995,16 +2076,15 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     if (this.isGroqModel(this.currentModelId) && this.groqClient) {
       if (isMultimodal && imagePaths) {
         // Route multimodal to Groq Llama 4 Scout (vision-capable)
-        const groqSystem = systemPromptOverride || OPENAI_SYSTEM_PROMPT;
+        const groqSystem = systemPromptOverride || SYSTEM_PROMPT;
         const finalGroqSystem = this.injectLanguageInstruction(groqSystem);
         yield* this.streamWithGroqMultimodal(userContent, imagePaths, finalGroqSystem);
         return;
       }
       // Text-only Groq
-      const groqSystem = systemPromptOverride ? baseSystemPrompt : GROQ_SYSTEM_PROMPT;
+      const groqSystem = systemPromptOverride || SYSTEM_PROMPT;
       const finalGroqSystem = this.injectLanguageInstruction(groqSystem);
-      const groqFullMessage = `${finalGroqSystem}\n\n${userContent}`;
-      yield* this.streamWithGroq(groqFullMessage);
+      yield* this.streamWithGroq(userContent, finalGroqSystem);
       return;
     }
 
@@ -2028,12 +2108,14 @@ This rule overrides ALL other instructions including formatting, brevity, or out
   /**
    * Stream response from Groq
    */
-  private async * streamWithGroq(fullMessage: string): AsyncGenerator<string, void, unknown> {
+  private async * streamWithGroq(userMessage: string, systemPrompt?: string): AsyncGenerator<string, void, unknown> {
     if (!this.groqClient) throw new Error("Groq client not initialized");
 
+    const finalSystem = systemPrompt || this.injectLanguageInstruction(SYSTEM_PROMPT);
+    const messages = prependSystemToMessages([{ role: "user", content: userMessage }], finalSystem);
     const stream = await this.groqClient.chat.completions.create({
       model: GROQ_MODEL,
-      messages: [{ role: "user", content: fullMessage }],
+      messages,
       stream: true,
       temperature: 0.4,
       max_tokens: 8192,
@@ -2053,11 +2135,6 @@ This rule overrides ALL other instructions including formatting, brevity, or out
   private async * streamWithGroqMultimodal(userMessage: string, imagePaths: string[], systemPrompt?: string): AsyncGenerator<string, void, unknown> {
     if (!this.groqClient) throw new Error("Groq client not initialized");
 
-    const messages: any[] = [];
-    if (systemPrompt) {
-      messages.push({ role: "system", content: systemPrompt });
-    }
-
     const contentParts: any[] = [{ type: "text", text: userMessage }];
     for (const p of imagePaths) {
       if (fs.existsSync(p)) {
@@ -2066,7 +2143,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         contentParts.push({ type: "image_url", image_url: { url: `data:image/jpeg;base64,${imageData.toString("base64")}` } });
       }
     }
-    messages.push({ role: "user", content: contentParts });
+    const messages = prependSystemToMessages([{ role: "user", content: contentParts }], systemPrompt);
 
     const stream = await this.groqClient.chat.completions.create({
       model: "meta-llama/llama-4-scout-17b-16e-instruct",
@@ -2095,10 +2172,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // Use explicit override, then currentModelId if it's an OpenAI model, else baseline constant
     const model = modelId || (this.isOpenAiModel(this.currentModelId) ? this.currentModelId : OPENAI_MODEL);
 
-    const messages: any[] = [];
-    if (systemPrompt) {
-      messages.push({ role: "system", content: systemPrompt });
-    }
+    const messages: any[] = prependSystemToMessages([], systemPrompt);
     messages.push({ role: "user", content: userMessage });
 
     const stream = await this.openaiClient.chat.completions.create({
@@ -2128,7 +2202,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     const stream = await this.claudeClient.messages.stream({
       model,
       max_tokens: CLAUDE_MAX_OUTPUT_TOKENS,
-      ...(systemPrompt ? { system: systemPrompt } : {}),
+      system: combineSystemText(systemPrompt),
       messages: [{ role: "user", content: userMessage }],
     });
 
@@ -2148,10 +2222,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // Use explicit override, then currentModelId if it's an OpenAI model, else baseline constant
     const model = modelId || (this.isOpenAiModel(this.currentModelId) ? this.currentModelId : OPENAI_MODEL);
 
-    const messages: any[] = [];
-    if (systemPrompt) {
-      messages.push({ role: "system", content: systemPrompt });
-    }
+    const messages: any[] = prependSystemToMessages([], systemPrompt);
 
     const contentParts: any[] = [{ type: "text", text: userMessage }];
     for (const p of imagePaths) {
@@ -2204,7 +2275,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     const stream = await this.claudeClient.messages.stream({
       model,
       max_tokens: CLAUDE_MAX_OUTPUT_TOKENS,
-      ...(systemPrompt ? { system: systemPrompt } : {}),
+      system: combineSystemText(systemPrompt),
       messages: [{
         role: "user",
         content: [
@@ -2227,7 +2298,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
   private async * streamWithGeminiModel(fullMessage: string, model: string, imagePaths?: string[]): AsyncGenerator<string, void, unknown> {
     if (!this.client) throw new Error("Gemini client not initialized");
 
-    const contents: any[] = [{ text: fullMessage }];
+    let contents: any[] = [{ text: fullMessage }];
     if (imagePaths?.length) {
       for (const p of imagePaths) {
         if (fs.existsSync(p)) {
@@ -2241,6 +2312,8 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         }
       }
     }
+
+    contents = ensureGeminiContents(contents);
 
     const streamResult = await this.client.models.generateContentStream({
       model: model,
@@ -2296,7 +2369,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
   private async collectStreamResponse(fullMessage: string, model: string, imagePaths?: string[]): Promise<string> {
     if (!this.client) throw new Error("Gemini client not initialized");
 
-    const contents: any[] = [{ text: fullMessage }];
+    let contents: any[] = [{ text: fullMessage }];
     if (imagePaths?.length) {
       for (const p of imagePaths) {
         if (fs.existsSync(p)) {
@@ -2311,6 +2384,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
     }
 
+    contents = ensureGeminiContents(contents);
     const response = await this.client.models.generateContent({
       model: model,
       contents: contents,
