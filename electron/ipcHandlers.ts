@@ -2277,13 +2277,35 @@ export function initializeIpcHandlers(appState: AppState): void {
       }
       const engine = orchestrator.getCompanyResearchEngine();
 
-      // Wire Tavily Search provider if key is configured
+      // Tavily integration is DISABLED by default to prefer LLM (Groq) fallbacks.
+      // To explicitly enable Tavily, set the environment variable `ENABLE_TAVILY=1`.
       const { CredentialsManager } = require('./services/CredentialsManager');
       const cm = CredentialsManager.getInstance();
       const tavilyApiKey = cm.getTavilyApiKey();
-      if (tavilyApiKey) {
-        const { TavilySearchProvider } = require('../premium/electron/knowledge/TavilySearchProvider');
-        engine.setSearchProvider(new TavilySearchProvider(tavilyApiKey));
+      if (tavilyApiKey && process.env.ENABLE_TAVILY === '1') {
+        try {
+          const { TavilySearchProvider } = require('../premium/electron/knowledge/TavilySearchProvider');
+          if (TavilySearchProvider) {
+            const tavilyProvider = new TavilySearchProvider(tavilyApiKey);
+            // Quick probe to verify Tavily can return useful sources before wiring it in
+            const probeQuery = `${companyName} company overview business model`;
+            try {
+              const probeResults = await tavilyProvider.search(probeQuery, { maxResults: 2, searchDepth: 'basic' });
+              engine.setSearchProvider(tavilyProvider);
+              if (Array.isArray(probeResults) && probeResults.length > 0) {
+                console.log('[IPC] TavilySearchProvider probe succeeded — using Tavily for research');
+              } else {
+                console.log('[IPC] TavilySearchProvider probe completed with no hits — using provider and allowing LLM fallback');
+              }
+            } catch (probeErr: any) {
+              console.warn('[IPC] TavilySearchProvider probe failed (will not use provider):', probeErr?.message || probeErr);
+            }
+          }
+        } catch (e: any) {
+          console.warn('[IPC] TavilySearchProvider not available, continuing without it:', e?.message || e);
+        }
+      } else if (tavilyApiKey) {
+        console.log('[IPC] Tavily API key present but Tavily integration is disabled by default. Set ENABLE_TAVILY=1 to enable.');
       }
 
       // Build full JD context so the dossier is tailored to the exact role
