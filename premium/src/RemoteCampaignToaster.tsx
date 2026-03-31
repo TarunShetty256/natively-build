@@ -187,7 +187,7 @@ export const RemoteCampaignToaster: React.FC<RemoteCampaignToasterProps> = ({
                                 {/* Social Proof & Dismiss */}
                                 <div className="flex flex-col items-center gap-3 mt-1">
                                     <div className={`flex items-center gap-1.5 ${isLight ? 'text-black/40' : 'text-white/40'}`}>
-                                        <span className="text-[12px] font-medium">3000+ people are already using Natively</span>
+                                        <span className="text-[12px] font-medium">3000+ people are already using TeamSync</span>
                                     </div>
                                     <button
                                         onClick={() => onDismiss(campaign.id)}

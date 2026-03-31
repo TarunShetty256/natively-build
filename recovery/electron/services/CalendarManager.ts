@@ -296,8 +296,8 @@ export class CalendarManager extends EventEmitter {
         const minutesUntil = Math.max(1, Math.round(timeUntilMs / 60000));
         const hoursUntil = Math.round(minutesUntil / 60);
         const body = minutesUntil >= 60
-            ? `"${event.title}" starts in ${hoursUntil} hour${hoursUntil === 1 ? '' : 's'}. Start Natively?`
-            : `"${event.title}" starts in ${minutesUntil} minute${minutesUntil === 1 ? '' : 's'}. Start Natively?`;
+            ? `"${event.title}" starts in ${hoursUntil} hour${hoursUntil === 1 ? '' : 's'}. Start TeamSync?`
+            : `"${event.title}" starts in ${minutesUntil} minute${minutesUntil === 1 ? '' : 's'}. Start TeamSync?`;
         const notif = new Notification({
             title: 'Meeting starting soon',
             body,

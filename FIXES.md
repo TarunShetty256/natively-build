@@ -40,7 +40,7 @@ No global shortcut existed that combined screenshot capture + AI analysis in one
 ### Fix Summary
 Added a new global keybind `general:capture-and-process` (default: `Cmd+Shift+Enter`) that:
 1. Takes a full-screen screenshot from the main process (global trigger works from any app)
-2. Shows the Natively window
+2. Shows the TeamSync window
 3. Sends a `capture-and-process` IPC event with the screenshot path + preview
 4. In the renderer, attaches the screenshot to the input context, then immediately triggers `handleWhatToSay()` (the AI analysis)
 
@@ -59,7 +59,7 @@ Added a new global keybind `general:capture-and-process` (default: `Cmd+Shift+En
 ### How to Test
 1. Open any other app (browser, editor, etc.)
 2. Press `Cmd+Shift+Enter`
-3. Natively should appear, attach the current screenshot to context, and immediately start AI analysis
+3. TeamSync should appear, attach the current screenshot to context, and immediately start AI analysis
 
 ### Known Limitations
 - The keybind defaults to `Cmd+Shift+Enter` to avoid conflicting with standard text-editing shortcuts. Power users may prefer `Cmd+Enter` but that would require disabling the local `process-screenshots` binding when the app is unfocused.

@@ -167,8 +167,8 @@ export const PremiumUpgradeModal: React.FC<PremiumUpgradeModalProps> = ({ isOpen
                                 <CheckCircle size={28} className="text-green-400" strokeWidth={2} />
                             </div>
                             <h2 className={`text-[18px] font-semibold tracking-tight ${isLight ? 'text-text-primary' : 'text-white/90'}`}>Pro License Active</h2>
-                            <p className={`text-[13px] mt-2 max-w-[280px] mx-auto leading-relaxed mb-8 ${isLight ? 'text-text-secondary' : 'text-white/50'}`}>
-                                Your device is fully authorized for Natively's premium features including the Profile Engine, Job Description Intelligence, and Company Research.
+                                <p className={`text-[13px] mt-2 max-w-[280px] mx-auto leading-relaxed mb-8 ${isLight ? 'text-text-secondary' : 'text-white/50'}`}>
+                                Your device is fully authorized for TeamSync's premium features including the Profile Engine, Job Description Intelligence, and Company Research.
                             </p>
 
                             <button

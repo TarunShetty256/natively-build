@@ -30,7 +30,7 @@ const FEATURES: FeatureSlide[] = [
     },
 
     {
-        id: 'support_natively',
+        id: 'support_TeamSync',
         headline: '🚀 Smart AI Assistant ',
         subtitle: '🤖 Your Personal AI Copilot – From coding help to daily tasks, get instant support powered by advanced AI.',
         bullets: [],

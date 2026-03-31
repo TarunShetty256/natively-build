@@ -1,6 +1,6 @@
 # Conversation Future
 
-This document captures planned conversation capabilities for Natively so future work stays aligned and easy to scope.
+This document captures planned conversation capabilities for TeamSync so future work stays aligned and easy to scope.
 
 ## Goals
 - Provide interview-ready responses with minimal latency.

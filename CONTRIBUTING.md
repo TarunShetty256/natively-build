@@ -1,6 +1,6 @@
-# Contributing to Natively
+# Contributing to TeamSync
 
-First off, thank you for considering contributing to Natively! It's people like you that make Natively such a great tool.
+First off, thank you for considering contributing to TeamSync! It's people like you that make TeamSync such a great tool.
 
 Following these guidelines helps to communicate that you respect the time of the developers managing and developing this open source project. In return, they should reciprocate that respect in addressing your issue, assessing changes, and helping you finalize your pull requests.
 
@@ -44,8 +44,8 @@ Enhancement suggestions are tracked as GitHub issues. When you are creating an e
 - Use a clear and descriptive title for the issue to identify the suggestion.
 - Provide a step-by-step description of the suggested enhancement in as many details as possible.
 - Provide specific examples to demonstrate the steps.
-- Describe the current behavior and explain which behavior you expected to see instead and why.
-- Explain why this enhancement would be useful to most Natively users.
+  - Describe the current behavior and explain which behavior you expected to see instead and why.
+  - Explain why this enhancement would be useful to most TeamSync users.
 
 ### Pull Requests
 
@@ -111,4 +111,4 @@ When contributing, ensure you understand which context (Main Process, Renderer P
   - ⬆️ `:arrow_up:` when upgrading dependencies
   - ⬇️ `:arrow_down:` when downgrading dependencies
 
-Thank you for contributing to Natively!
+Thank you for contributing to TeamSync!
