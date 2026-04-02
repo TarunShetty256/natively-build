@@ -1175,13 +1175,32 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       messages.push({ role: "user", content: userMessage });
     }
 
-    const response = await this.openaiClient.chat.completions.create({
-      model,
-      messages,
-      max_completion_tokens: model.toLowerCase().includes('claude') ? CLAUDE_MAX_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS,
-    });
+    const MAX_ATTEMPTS = 3;
+    let lastError: any = null;
 
-    return response.choices[0]?.message?.content || "";
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const response = await this.withTimeout(
+          this.openaiClient.chat.completions.create({
+            model,
+            messages,
+            max_completion_tokens: model.toLowerCase().includes('claude') ? CLAUDE_MAX_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS,
+          }),
+          60000,
+          `OpenAI generation attempt ${attempt}`
+        );
+
+        return response.choices[0]?.message?.content || "";
+      } catch (error: any) {
+        lastError = error;
+        console.warn(`[LLMHelper] OpenAI attempt ${attempt}/${MAX_ATTEMPTS} failed: ${error?.message || error}`);
+        if (attempt < MAX_ATTEMPTS) {
+          await this.delay(500 * attempt);
+        }
+      }
+    }
+
+    throw lastError || new Error('OpenAI generation failed after 3 attempts');
   }
 
   // The handler for cURL requests
@@ -1277,15 +1296,34 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     }
     content.push({ type: "text", text: userMessage });
 
-    const response = await this.claudeClient.messages.create({
-      model,
-      max_tokens: CLAUDE_MAX_OUTPUT_TOKENS,
-      ...(systemPrompt ? { system: systemPrompt } : {}),
-      messages: [{ role: "user", content }],
-    });
+    const MAX_ATTEMPTS = 3;
+    let lastError: any = null;
 
-    const textBlock = response.content.find((block: any) => block.type === 'text') as any;
-    return textBlock?.text || "";
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      try {
+        const response = await this.withTimeout(
+          this.claudeClient.messages.create({
+            model,
+            max_tokens: CLAUDE_MAX_OUTPUT_TOKENS,
+            ...(systemPrompt ? { system: systemPrompt } : {}),
+            messages: [{ role: "user", content }],
+          }),
+          90000,
+          `Claude generation attempt ${attempt}`
+        );
+
+        const textBlock = response.content.find((block: any) => block.type === 'text') as any;
+        return textBlock?.text || "";
+      } catch (error: any) {
+        lastError = error;
+        console.warn(`[LLMHelper] Claude attempt ${attempt}/${MAX_ATTEMPTS} failed: ${error?.message || error}`);
+        if (attempt < MAX_ATTEMPTS) {
+          await this.delay(1000 * attempt);
+        }
+      }
+    }
+
+    throw lastError || new Error('Claude generation failed after 3 attempts');
   }
 
   /**
@@ -1339,11 +1377,15 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     // 5. Execute Fetch
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 30000);
+
       const response = await fetch(url, {
         method: requestConfig.method || 'POST',
         headers: headers,
-        body: JSON.stringify(body)
-      });
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timeoutId));
 
       const data = await response.json();
       console.log(`[LLMHelper] Custom Provider raw response:`, JSON.stringify(data).substring(0, 1000));
@@ -1356,7 +1398,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       const extracted = this.extractFromCommonFormats(data);
       console.log(`[LLMHelper] Custom Provider extracted text length: ${extracted.length}`);
       return extracted;
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.name === 'AbortError') {
+        throw new Error('Custom Provider request timed out after 30000ms');
+      }
       console.error("Custom Provider Error:", error);
       throw error;
     }

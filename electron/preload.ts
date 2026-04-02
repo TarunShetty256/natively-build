@@ -229,6 +229,7 @@ interface ElectronAPI {
   setKeybind: (id: string, accelerator: string) => Promise<boolean>
   resetKeybinds: () => Promise<Array<{ id: string; label: string; accelerator: string; isGlobal: boolean; defaultAccelerator: string }>>
   onKeybindsUpdate: (callback: (keybinds: Array<any>) => void) => () => void
+  onKeybindRegistrationFailed: (callback: (data: { id: string; accelerator: string; reason: string }) => void) => () => void
 
   // Global shortcut events (stealth: fired even when window is not focused)
   onGlobalShortcut: (callback: (data: { action: string }) => void) => () => void
@@ -974,6 +975,14 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on('keybinds:update', subscription)
     return () => {
       ipcRenderer.removeListener('keybinds:update', subscription)
+    }
+  },
+
+  onKeybindRegistrationFailed: (callback: (data: { id: string; accelerator: string; reason: string }) => void) => {
+    const subscription = (_: any, data: { id: string; accelerator: string; reason: string }) => callback(data)
+    ipcRenderer.on('keybinds:registration-failed', subscription)
+    return () => {
+      ipcRenderer.removeListener('keybinds:registration-failed', subscription)
     }
   },
 

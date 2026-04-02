@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPreferences, screen } from "electron"
+import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPreferences, screen, desktopCapturer } from "electron"
 import path from "path"
 import fs from "fs"
 import { autoUpdater } from "electron-updater"
@@ -85,6 +85,22 @@ async function ensureMacMicrophoneAccess(context: string): Promise<boolean> {
   } catch (error) {
     console.error(`[Main] Failed to check macOS microphone permission during ${context}:`, error);
     return false;
+  }
+}
+
+async function warmupMacScreenRecordingPermission(context: string): Promise<void> {
+  if (process.platform !== 'darwin') return;
+
+  try {
+    // Trigger TCC Screen Recording prompt early with a tiny thumbnail request.
+    await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: 1, height: 1 },
+    });
+    console.log(`[Main] macOS screen recording warm-up completed during ${context}`);
+  } catch (error) {
+    // Non-fatal: actual screenshot paths still perform explicit error handling.
+    console.warn(`[Main] macOS screen recording warm-up failed during ${context}:`, error);
   }
 }
 
@@ -254,6 +270,9 @@ export class AppState {
     this.settingsWindowHelper.setContentProtection(this.isUndetectable);
     this.modelSelectorWindowHelper.setContentProtection(this.isUndetectable);
     this.cropperWindowHelper.setContentProtection(this.isUndetectable);
+
+    // Pre-trigger macOS screen recording permission during startup instead of first capture.
+    void warmupMacScreenRecordingPermission('app startup');
 
     if (process.platform === 'win32' || process.platform === 'darwin') {
       this.cropperWindowHelper.preload();
@@ -822,6 +841,11 @@ export class AppState {
     }
 
     stt.setRecognitionLanguage(sttLanguage);
+
+    // Google streaming has a practical session limit. Restart proactively at 4m30s.
+    if (stt instanceof GoogleSTT) {
+      stt.setProactiveRestartInterval(270000);
+    }
 
     // Handlers are factored out so we can re-attach them to a fallback provider
     const handleTranscript = (segment: { text: string, isFinal: boolean, confidence: number }) => {

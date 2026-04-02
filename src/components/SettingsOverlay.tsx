@@ -383,7 +383,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         }
     }, [isOpen, initialTab]);
     
-    const { shortcuts, updateShortcut, resetShortcuts } = useShortcuts();
+    const { shortcuts, keybindRegistrationError, updateShortcut, resetShortcuts } = useShortcuts();
     const [isUndetectable, setIsUndetectable] = useState(false);
     const [isMousePassthrough, setIsMousePassthrough] = useState(false);
     const [disguiseMode, setDisguiseMode] = useState<'terminal' | 'settings' | 'activity' | 'none'>('none');
@@ -2634,6 +2634,9 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                         <div>
                                             <h3 className="text-lg font-bold text-text-primary mb-1">Keyboard shortcuts</h3>
                                             <p className="text-xs text-text-secondary">TeamSync works with these easy-to-remember commands.</p>
+                                            {keybindRegistrationError && (
+                                                <p className="text-xs text-red-500 mt-1">{keybindRegistrationError}</p>
+                                            )}
                                         </div>
                                         <button
                                             onClick={resetShortcuts}

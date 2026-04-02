@@ -196,6 +196,29 @@ export class DeepgramStreamingSTT extends EventEmitter {
             try {
                 const msg = JSON.parse(data.toString());
 
+                // Graceful handling for known provider-side session states.
+                if (msg.type === 'Error') {
+                    const code = String(msg.err_code || msg.code || '').toLowerCase();
+                    const text = String(msg.err_msg || msg.message || '').toLowerCase();
+                    const merged = `${code} ${text}`;
+
+                    if (merged.includes('concurrent_session_blocked')) {
+                        console.warn('[DeepgramStreaming] concurrent_session_blocked received. Scheduling bounded reconnect...');
+                        this.scheduleReconnect();
+                        return;
+                    }
+
+                    if (merged.includes('upstream_closed')) {
+                        console.warn('[DeepgramStreaming] upstream_closed received. Scheduling bounded reconnect...');
+                        this.scheduleReconnect();
+                        return;
+                    }
+
+                    const err = new Error(`Deepgram error: ${msg.err_msg || msg.message || 'Unknown error'}`);
+                    this.emit('error', err);
+                    return;
+                }
+
                 // Deepgram response structure:
                 // { type: "Results", channel: { alternatives: [{ transcript, confidence }] }, is_final }
                 if (msg.type !== 'Results') return;
@@ -222,10 +245,12 @@ export class DeepgramStreamingSTT extends EventEmitter {
             // Do not force isActive=false; let write() trigger reconnect if isActive is still true
             this.isConnecting = false;
             this.clearKeepAlive();
-            console.log(`[DeepgramStreaming] Closed (code=${code}, reason=${reason.toString()})`);
+            const reasonText = reason.toString();
+            console.log(`[DeepgramStreaming] Closed (code=${code}, reason=${reasonText})`);
 
             // Auto-reconnect on unexpected close (excluding silence timeout 1000)
-            if (this.shouldReconnect && code !== 1000) {
+            const gracefulButBroken = code === 1000 && reasonText.toLowerCase().includes('upstream_closed');
+            if (this.shouldReconnect && (code !== 1000 || gracefulButBroken)) {
                 this.scheduleReconnect();
             }
         });

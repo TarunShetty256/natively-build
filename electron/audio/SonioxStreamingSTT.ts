@@ -24,6 +24,7 @@ const SONIOX_WEBSOCKET_URL = 'wss://stt-rt.soniox.com/transcribe-websocket';
 const RECONNECT_BASE_DELAY_MS = 1000;
 const RECONNECT_MAX_DELAY_MS = 30000;
 const KEEPALIVE_INTERVAL_MS = 5000;
+const MAX_RECONNECT_ATTEMPTS = 10;
 
 export class SonioxStreamingSTT extends EventEmitter {
     private apiKey: string;
@@ -320,11 +321,18 @@ export class SonioxStreamingSTT extends EventEmitter {
     private scheduleReconnect(): void {
         if (!this.shouldReconnect) return;
 
+        this.reconnectAttempts++;
+        if (this.reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+            console.error('[SonioxStreaming] Max reconnect attempts exceeded. Giving up.');
+            this.shouldReconnect = false;
+            this.emit('error', new Error('SonioxStreaming: max reconnect attempts exceeded'));
+            return;
+        }
+
         const delay = Math.min(
-            RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts),
+            RECONNECT_BASE_DELAY_MS * Math.pow(2, this.reconnectAttempts - 1),
             RECONNECT_MAX_DELAY_MS
         );
-        this.reconnectAttempts++;
 
         console.log(`[SonioxStreaming] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`);
 

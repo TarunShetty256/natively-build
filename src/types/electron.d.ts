@@ -266,6 +266,7 @@ export interface ElectronAPI {
   setKeybind: (id: string, accelerator: string) => Promise<boolean>
   resetKeybinds: () => Promise<Array<{ id: string; label: string; accelerator: string; isGlobal: boolean; defaultAccelerator: string }>>
   onKeybindsUpdate: (callback: (keybinds: Array<any>) => void) => () => void
+  onKeybindRegistrationFailed: (callback: (data: { id: string; accelerator: string; reason: string }) => void) => () => void
   onGlobalShortcut: (callback: (data: { action: string }) => void) => () => void
 
   // Profile Engine API

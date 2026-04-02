@@ -6,6 +6,7 @@ import * as path from 'path';
 import { RECOGNITION_LANGUAGES } from '../config/languages';
 
 const ELEVENLABS_WS_URL = 'wss://api.elevenlabs.io/v1/speech-to-text/realtime';
+const MAX_RECONNECT_ATTEMPTS = 10;
 
 export class ElevenLabsStreamingSTT extends EventEmitter {
     private apiKey: string;
@@ -320,11 +321,18 @@ export class ElevenLabsStreamingSTT extends EventEmitter {
 
     private scheduleReconnect(): void {
         if (!this.shouldReconnect) return;
-        
-        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+
         this.reconnectAttempts++;
+        if (this.reconnectAttempts > MAX_RECONNECT_ATTEMPTS) {
+            console.error('[ElevenLabsStreaming] Max reconnect attempts exceeded. Giving up.');
+            this.shouldReconnect = false;
+            this.emit('error', new Error('ElevenLabsStreaming: max reconnect attempts exceeded'));
+            return;
+        }
         
-        console.log(`[ElevenLabsStreaming] Reconnecting in ${delay}ms...`);
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 30000);
+        
+        console.log(`[ElevenLabsStreaming] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})...`);
         this.reconnectTimer = setTimeout(() => {
             this.reconnectTimer = null;
             if (this.shouldReconnect) {

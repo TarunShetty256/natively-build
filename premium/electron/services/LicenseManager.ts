@@ -151,11 +151,6 @@ export class LicenseManager {
             return { success: false, error: 'Invalid license key.' };
         }
 
-        if (process.env.NATIVELY_LICENSE_BYPASS === 'true') {
-            console.warn('[LicenseManager] NATIVELY_LICENSE_BYPASS enabled; skipping license verification.');
-            this.setPremiumState(true);
-            return { success: true };
-        }
 
         if (MONGODB_URI) {
             const deviceId = this.getHardwareId();

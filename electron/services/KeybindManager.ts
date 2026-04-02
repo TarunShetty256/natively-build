@@ -236,14 +236,26 @@ export class KeybindManager {
                         console.log(`[KeybindManager] Registered global shortcut: ${acc} -> ${kb.id}`);
                     } else {
                         console.warn(`[KeybindManager] Failed to register global shortcut (likely in use by OS): ${acc}`);
+                        this.broadcastRegistrationFailure(kb.id, acc, 'Shortcut is likely already reserved by the OS or another app.');
                     }
                 } catch (e) {
                     console.error(`[KeybindManager] Exception while registering global shortcut ${acc}:`, e);
+                    this.broadcastRegistrationFailure(kb.id, acc, e instanceof Error ? e.message : String(e));
                 }
             }
         });
 
         this.updateMenu();
+    }
+
+    private broadcastRegistrationFailure(id: string, accelerator: string, reason: string): void {
+        const payload = { id, accelerator, reason };
+        const windows = BrowserWindow.getAllWindows();
+        windows.forEach(win => {
+            if (!win.isDestroyed()) {
+                win.webContents.send('keybinds:registration-failed', payload);
+            }
+        });
     }
 
     public updateMenu() {

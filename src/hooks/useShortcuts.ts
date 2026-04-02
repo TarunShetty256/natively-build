@@ -90,6 +90,7 @@ export const DEFAULT_SHORTCUTS: ShortcutConfig = {
 export const useShortcuts = () => {
     // Initialize state with platform-aware defaults
     const [shortcuts, setShortcuts] = useState<ShortcutConfig>(buildDefaultShortcuts);
+    const [keybindRegistrationError, setKeybindRegistrationError] = useState<string | null>(null);
 
     // Map backend keybinds (array of objects) to frontend state (ShortcutConfig)
     const mapBackendToFrontend = useCallback((backendKeybinds: any[]) => {
@@ -151,8 +152,22 @@ export const useShortcuts = () => {
             mapBackendToFrontend(keybinds);
         });
 
-        return unsubscribe;
+        const unsubscribeFailure = window.electronAPI?.onKeybindRegistrationFailed?.((data) => {
+            const msg = `Could not register ${data.accelerator} (${data.id}). ${data.reason}`;
+            setKeybindRegistrationError(msg);
+        });
+
+        return () => {
+            unsubscribe?.();
+            unsubscribeFailure?.();
+        };
     }, [mapBackendToFrontend]);
+
+    useEffect(() => {
+        if (!keybindRegistrationError) return;
+        const timer = setTimeout(() => setKeybindRegistrationError(null), 6000);
+        return () => clearTimeout(timer);
+    }, [keybindRegistrationError]);
 
     // Function to update a specific shortcut
     const updateShortcut = useCallback(async (actionId: keyof ShortcutConfig, keys: string[]) => {
@@ -272,6 +287,7 @@ export const useShortcuts = () => {
 
     return {
         shortcuts,
+        keybindRegistrationError,
         updateShortcut,
         resetShortcuts,
         isShortcutPressed
