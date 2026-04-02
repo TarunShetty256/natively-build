@@ -75,6 +75,11 @@ export class IntelligenceEngine extends EventEmitter {
     private assistCancellationToken: AbortController | null = null;
     private currentGenerationId: number = 0;
 
+    // Prevent stale looped "what to say" generations when transcript input has not changed.
+    private lastWhatToSayInputKey: string | null = null;
+    private lastWhatToSayOutput: string | null = null;
+    private lastWhatToSayTime: number = 0;
+
     // Keep reference to LLMHelper for client access
     private llmHelper: LLMHelper;
 
@@ -278,15 +283,34 @@ export class IntelligenceEngine extends EventEmitter {
 
             const preparedTranscript = prepareTranscriptForWhatToAnswer(transcriptTurns, 12);
 
+            const lastInterviewerTurn = this.session.getLastInterviewerTurn();
+            const freshestInterviewerTurn = (lastInterim?.text || '').trim() || (lastInterviewerTurn || '').trim();
+            const inferredQuestion = (question || '').trim() || freshestInterviewerTurn || 'inferred';
+
+            // If this is an inferred request with unchanged source text+context, skip regeneration
+            // for a short window to avoid repeating stale answers in a loop.
+            const isInferredRun = !(question && question.trim().length > 0);
+            const hasImages = !!(imagePaths && imagePaths.length > 0);
+            const inputKey = `${freshestInterviewerTurn}\n---\n${preparedTranscript}`;
+            if (
+                isInferredRun &&
+                !hasImages &&
+                this.lastWhatToSayInputKey === inputKey &&
+                (now - this.lastWhatToSayTime) < 12000
+            ) {
+                console.log('[IntelligenceEngine] Skipping duplicate what_to_say generation (unchanged transcript input).');
+                this.setMode('idle');
+                return this.lastWhatToSayOutput;
+            }
+
             const temporalContext = buildTemporalContext(
                 contextItems,
                 this.session.getAssistantResponseHistory(),
                 180
             );
 
-            const lastInterviewerTurn = this.session.getLastInterviewerTurn();
             const intentResult = await classifyIntent(
-                lastInterviewerTurn,
+                freshestInterviewerTurn || lastInterviewerTurn,
                 preparedTranscript,
                 this.session.getAssistantResponseHistory().length
             );
@@ -309,7 +333,7 @@ export class IntelligenceEngine extends EventEmitter {
                     streamAborted = true;
                     break;
                 }
-                this.emit('suggested_answer_token', token, question || 'inferred', confidence);
+                this.emit('suggested_answer_token', token, inferredQuestion, confidence);
                 fullAnswer += token;
             }
 
@@ -325,16 +349,20 @@ export class IntelligenceEngine extends EventEmitter {
 
             this.session.addAssistantMessage(fullAnswer);
 
+            this.lastWhatToSayInputKey = inputKey;
+            this.lastWhatToSayOutput = fullAnswer;
+            this.lastWhatToSayTime = Date.now();
+
             this.session.pushUsage({
                 type: 'assist',
                 timestamp: Date.now(),
-                question: question || 'What to Answer',
+                question: inferredQuestion,
                 answer: fullAnswer
             });
 
             // CQ-05 fix: only emit the "complete" event after a non-aborted stream.
             // The renderer already has all tokens — this is for metadata only (e.g. copying, history).
-            this.emit('suggested_answer', fullAnswer, question || 'What to Answer', confidence);
+            this.emit('suggested_answer', fullAnswer, inferredQuestion, confidence);
 
             this.setMode('idle');
             return fullAnswer;
@@ -439,7 +467,9 @@ export class IntelligenceEngine extends EventEmitter {
                 return null;
             }
 
-            const context = this.session.getFormattedContext(120);
+            // Use full session context so recap reflects the whole conversation,
+            // not only the most recent rolling window.
+            const context = this.session.getFullSessionContext() || this.session.getFormattedContext(120);
             if (!context) {
                 console.warn('[IntelligenceEngine] No context available for recap');
                 this.setMode('idle');
@@ -820,6 +850,9 @@ export class IntelligenceEngine extends EventEmitter {
     reset(): void {
         this.activeMode = 'idle';
         this.currentGenerationId++; // Increment to break all active LLM streams
+        this.lastWhatToSayInputKey = null;
+        this.lastWhatToSayOutput = null;
+        this.lastWhatToSayTime = 0;
         if (this.assistCancellationToken) {
             this.assistCancellationToken.abort();
             this.assistCancellationToken = null;

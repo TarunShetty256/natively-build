@@ -105,6 +105,10 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
 
     const [rollingTranscript, setRollingTranscript] = useState('');  // For interviewer rolling text bar
     const [isInterviewerSpeaking, setIsInterviewerSpeaking] = useState(false);  // Track if actively speaking
+    const rollingFinalSegmentsRef = useRef<string[]>([]);
+    const rollingInterimRef = useRef<string>('');
+    const lastFinalSignatureRef = useRef<string>('');
+    const lastFinalAtRef = useRef<number>(0);
     const [voiceInput, setVoiceInput] = useState('');  // Accumulated user voice input
     const voiceInputRef = useRef<string>('');  // Ref for capturing in async handlers
     const textInputRef = useRef<HTMLInputElement>(null); // Ref for input focus
@@ -354,6 +358,12 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             setManualTranscript('');
             setVoiceInput('');
             setIsProcessing(false);
+            setRollingTranscript('');
+            setIsInterviewerSpeaking(false);
+            rollingFinalSegmentsRef.current = [];
+            rollingInterimRef.current = '';
+            lastFinalSignatureRef.current = '';
+            lastFinalAtRef.current = 0;
             // Optionally reset connection status if needed, but connection persists
 
             // Track new conversation/session if applicable?
@@ -427,25 +437,44 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             // Route to rolling transcript bar - accumulate text continuously
             setIsInterviewerSpeaking(!transcript.final);
 
+            const normalizedText = (transcript.text || '').replace(/\s+/g, ' ').trim();
+            if (!normalizedText) return;
+
             if (transcript.final) {
-                // Append finalized text to accumulated transcript
-                setRollingTranscript(prev => {
-                    const separator = prev ? '  ·  ' : '';
-                    return prev + separator + transcript.text;
-                });
+                const now = Date.now();
+                const signature = normalizedText.toLowerCase();
+
+                // Suppress immediate duplicate finals emitted by some STT providers.
+                if (
+                    signature === lastFinalSignatureRef.current &&
+                    (now - lastFinalAtRef.current) < 4000
+                ) {
+                    rollingInterimRef.current = '';
+                    const stable = rollingFinalSegmentsRef.current.join('  ·  ');
+                    setRollingTranscript(stable);
+                    return;
+                }
+
+                const finalized = rollingFinalSegmentsRef.current;
+                if (finalized[finalized.length - 1]?.toLowerCase() !== signature) {
+                    finalized.push(normalizedText);
+                }
+
+                rollingInterimRef.current = '';
+                lastFinalSignatureRef.current = signature;
+                lastFinalAtRef.current = now;
+
+                const stable = finalized.join('  ·  ');
+                setRollingTranscript(stable);
 
                 // Clear speaking indicator after pause
                 setTimeout(() => {
                     setIsInterviewerSpeaking(false);
                 }, 3000);
             } else {
-                // For partial transcripts, show current segment appended to accumulated
-                setRollingTranscript(prev => {
-                    // Find where previous finalized content ends (look for last separator)
-                    const lastSeparator = prev.lastIndexOf('  ·  ');
-                    const accumulated = lastSeparator >= 0 ? prev.substring(0, lastSeparator + 5) : '';
-                    return accumulated + transcript.text;
-                });
+                rollingInterimRef.current = normalizedText;
+                const stable = rollingFinalSegmentsRef.current.join('  ·  ');
+                setRollingTranscript(stable ? `${stable}  ·  ${normalizedText}` : normalizedText);
             }
         }));
 
