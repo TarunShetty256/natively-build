@@ -74,6 +74,14 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
     setToastOpen(true)
   }
 
+  const showMissingKeyToast = (backendError?: string) => {
+    showToast(
+      "API Key Needed",
+      backendError || "Add any one cloud API key in Settings to use cloud models.",
+      "neutral"
+    )
+  }
+
   const handleDeleteScreenshot = async (index: number) => {
     const screenshotToDelete = screenshots[index]
 
@@ -167,10 +175,15 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
         // @ts-ignore
         const result = await window.electronAPI.getDefaultModel();
         if (result && result.model) {
-          setCurrentModel(result.model);
-          // Set runtime model to the default
+          // Set runtime model to the default first.
           // @ts-ignore
-          window.electronAPI.setModel(result.model).catch(() => { });
+          const setResult = await window.electronAPI.setModel(result.model);
+          if (setResult?.success) {
+            setCurrentModel(result.model);
+          } else {
+            console.warn('Default model skipped:', setResult?.error || 'Missing provider key or invalid model.');
+            showMissingKeyToast(setResult?.error);
+          }
         }
       } catch (error) {
         console.error('Error loading default model:', error);
@@ -300,13 +313,23 @@ const Queue: React.FC<QueueProps> = ({ setView }) => {
     }
   }
 
-  const handleModelChange = (modelId: string) => {
-    setCurrentModel(modelId)
-    window.electronAPI.setModel(modelId).catch(console.error);
-    setChatMessages((msgs) => [...msgs, {
-      role: "gemini",
-      text: `🔄 Switched to ${modelId}. Ready for your questions!`
-    }])
+  const handleModelChange = async (modelId: string) => {
+    try {
+      const result = await window.electronAPI.setModel(modelId);
+      if (!result?.success) {
+        console.warn('Model switch skipped:', result?.error || 'Missing provider key or invalid model.');
+        showMissingKeyToast(result?.error);
+        return;
+      }
+
+      setCurrentModel(modelId)
+      setChatMessages((msgs) => [...msgs, {
+        role: "gemini",
+        text: `🔄 Switched to ${modelId}. Ready for your questions!`
+      }])
+    } catch (error) {
+      console.error(error);
+    }
   }
 
 

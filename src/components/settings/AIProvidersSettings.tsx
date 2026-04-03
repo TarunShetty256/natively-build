@@ -446,10 +446,20 @@ export const AIProvidersSettings: React.FC = () => {
                             }
                             return opts;
                         })()}
-                        onChange={(val) => {
+                        onChange={async (val) => {
+                            const prev = defaultModel;
                             setDefaultModel(val);
-                            // @ts-ignore - persist as default + update runtime + broadcast
-                            window.electronAPI?.setDefaultModel(val).catch(console.error);
+                            try {
+                                // @ts-ignore - persist as default + update runtime + broadcast
+                                const result = await window.electronAPI?.setDefaultModel(val);
+                                if (!result?.success) {
+                                    console.warn('Default model update skipped:', result?.error || 'Missing provider key or invalid model.');
+                                    setDefaultModel(prev);
+                                }
+                            } catch (error) {
+                                console.error(error);
+                                setDefaultModel(prev);
+                            }
                         }}
                     />
                 </div>

@@ -40,6 +40,102 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   };
 
+  const hasNonEmptyKey = (value?: string): boolean => {
+    return typeof value === 'string' && value.trim().length > 0;
+  };
+
+  const normalizeModelId = (modelId: string): string => {
+    const trimmed = (modelId || '').trim();
+    if (trimmed === 'gemini') return 'gemini-3.1-flash-lite-preview';
+    if (trimmed === 'gemini-pro') return 'gemini-3.1-pro-preview';
+    if (trimmed === 'claude') return 'claude-sonnet-4-6';
+    if (trimmed === 'llama') return 'llama-3.3-70b-versatile';
+    return trimmed;
+  };
+
+  const inferCloudProviderForModel = (normalizedModelId: string): 'gemini' | 'groq' | 'openai' | 'claude' | null => {
+    if (!normalizedModelId || normalizedModelId.startsWith('ollama-')) return null;
+
+    if (normalizedModelId.startsWith('claude-')) return 'claude';
+
+    if (
+      normalizedModelId.startsWith('gpt-') ||
+      normalizedModelId.startsWith('o1-') ||
+      normalizedModelId.startsWith('o3-') ||
+      normalizedModelId.includes('openai')
+    ) {
+      return 'openai';
+    }
+
+    if (
+      normalizedModelId.startsWith('llama-') ||
+      normalizedModelId.startsWith('mixtral-') ||
+      normalizedModelId.startsWith('gemma-') ||
+      normalizedModelId.startsWith('allam-') ||
+      normalizedModelId.startsWith('qwen-') ||
+      normalizedModelId.startsWith('deepseek-') ||
+      normalizedModelId.startsWith('mistral-') ||
+      normalizedModelId.startsWith('compound-')
+    ) {
+      return 'groq';
+    }
+
+    if (normalizedModelId.startsWith('gemini-') || normalizedModelId.startsWith('models/')) {
+      return 'gemini';
+    }
+
+    return null;
+  };
+
+  const validateModelSelection = (modelId: string, cm: any): { ok: boolean; error?: string } => {
+    const normalizedModelId = normalizeModelId(modelId);
+    if (!normalizedModelId) {
+      return { ok: false, error: 'Model id is required.' };
+    }
+
+    if (normalizedModelId.startsWith('ollama-')) {
+      return { ok: true };
+    }
+
+    const curlProviders = cm.getCurlProviders() || [];
+    const legacyProviders = cm.getCustomProviders() || [];
+    const allProviders = [...curlProviders, ...legacyProviders];
+    if (allProviders.some((provider: any) => provider.id === normalizedModelId)) {
+      return { ok: true };
+    }
+
+    const provider = inferCloudProviderForModel(normalizedModelId);
+    if (!provider) {
+      // Keep unknown ids backward-compatible; hard-block only known cloud families.
+      return { ok: true };
+    }
+
+    let hasKey = false;
+    let providerLabel: string = provider;
+    if (provider === 'gemini') {
+      providerLabel = 'Gemini';
+      hasKey = hasNonEmptyKey(cm.getGeminiApiKey());
+    } else if (provider === 'groq') {
+      providerLabel = 'Groq';
+      hasKey = hasNonEmptyKey(cm.getGroqApiKey());
+    } else if (provider === 'openai') {
+      providerLabel = 'OpenAI';
+      hasKey = hasNonEmptyKey(cm.getOpenaiApiKey());
+    } else if (provider === 'claude') {
+      providerLabel = 'Claude';
+      hasKey = hasNonEmptyKey(cm.getClaudeApiKey());
+    }
+
+    if (!hasKey) {
+      return {
+        ok: false,
+        error: `${providerLabel} API key is not configured. Add it in Settings before selecting this model.`
+      };
+    }
+
+    return { ok: true };
+  };
+
   // --- NEW Test Helper ---
   safeHandle("test-release-fetch", async () => {
     try {
@@ -1434,6 +1530,11 @@ export function initializeIpcHandlers(appState: AppState): void {
       const { CredentialsManager } = require('./services/CredentialsManager');
       const cm = CredentialsManager.getInstance();
 
+      const validation = validateModelSelection(modelId, cm);
+      if (!validation.ok) {
+        return { success: false, error: validation.error || 'Cannot switch to this model.' };
+      }
+
       // Get all providers (Curl + Custom)
       const curlProviders = cm.getCurlProviders();
       const legacyProviders = cm.getCustomProviders() || [];
@@ -1463,6 +1564,12 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       const cm = CredentialsManager.getInstance();
+
+      const validation = validateModelSelection(modelId, cm);
+      if (!validation.ok) {
+        return { success: false, error: validation.error || 'Cannot set this as default model.' };
+      }
+
       cm.setDefaultModel(modelId);
 
       // Also update the runtime model

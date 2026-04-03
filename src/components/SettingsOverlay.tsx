@@ -422,7 +422,7 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     const [verboseLogging, setVerboseLogging] = useState(false);
     const aotPollRef = useRef<number | null>(null);
     const AOT_POLL_INTERVAL_MS = 2000;
-    const AOT_POLL_MAX_ATTEMPTS = 20;
+    const AOT_POLL_MAX_ATTEMPTS = 180;
 
     const refreshProfileData = async () => {
         const data = await window.electronAPI?.profileGetProfile?.();
@@ -446,14 +446,25 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
         return keys.every((key) => status[key] === 'done' || status[key] === 'failed');
     };
 
+    const isAotRunning = (status: any): boolean => {
+        if (!status) return false;
+        const keys = ['companyResearch', 'negotiationScript', 'gapAnalysis', 'starMapping'];
+        return keys.some((key) => status[key] === 'running');
+    };
+
     const startAotPolling = () => {
+        if (aotPollRef.current !== null) return;
         stopAotPolling();
         let attempts = 0;
         aotPollRef.current = window.setInterval(async () => {
             attempts += 1;
-            const data = await refreshProfileData();
-            if (isAotSettled(data?.aotStatus) || attempts >= AOT_POLL_MAX_ATTEMPTS) {
-                stopAotPolling();
+            try {
+                const data = await refreshProfileData();
+                if (isAotSettled(data?.aotStatus) || attempts >= AOT_POLL_MAX_ATTEMPTS) {
+                    stopAotPolling();
+                }
+            } catch {
+                // Keep polling; transient IPC/read failures should not freeze the UI status.
             }
         }, AOT_POLL_INTERVAL_MS);
     };
@@ -490,6 +501,19 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
             stopAotPolling();
         };
     }, []);
+
+    useEffect(() => {
+        if (!isOpen) {
+            stopAotPolling();
+        }
+    }, [isOpen]);
+
+    useEffect(() => {
+        if (!isOpen || activeTab !== 'profile') return;
+        if (isAotRunning(profileData?.aotStatus)) {
+            startAotPolling();
+        }
+    }, [isOpen, activeTab, profileData?.aotStatus]);
 
     useEffect(() => {
         if (window.electronAPI?.onUndetectableChanged) {

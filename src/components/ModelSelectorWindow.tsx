@@ -2,6 +2,13 @@ import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
 import { Check, Loader2 } from 'lucide-react';
 import { STANDARD_CLOUD_MODELS, prettifyModelId } from '../utils/modelUtils';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
+import {
+    Toast,
+    ToastTitle,
+    ToastDescription,
+    ToastVariant,
+    ToastMessage
+} from './ui/toast';
 
 // Define Model Types
 interface ModelOption {
@@ -23,6 +30,25 @@ const ModelSelectorWindow = () => {
         } catch { return []; }
     });
     const [isLoading, setIsLoading] = useState<boolean>(() => availableModels.length === 0);
+    const [toastOpen, setToastOpen] = useState(false);
+    const [toastMessage, setToastMessage] = useState<ToastMessage>({
+        title: '',
+        description: '',
+        variant: 'neutral'
+    });
+
+    const showToast = (title: string, description: string, variant: ToastVariant = 'neutral') => {
+        setToastMessage({ title, description, variant });
+        setToastOpen(true);
+    };
+
+    const showMissingKeyToast = (backendError?: string) => {
+        showToast(
+            'API Key Needed',
+            backendError || 'Add any one cloud API key in Settings to use cloud models.',
+            'neutral'
+        );
+    };
 
 
 
@@ -125,12 +151,20 @@ const ModelSelectorWindow = () => {
         };
     }, []);
 
-    const handleSelectFn = (modelId: string) => {
-        setCurrentModel(modelId);
-        localStorage.setItem('cached-current-model', modelId);
-        
-        window.electronAPI?.setModel(modelId)
-            .catch((err: any) => console.error("Failed to set model:", err));
+    const handleSelectFn = async (modelId: string) => {
+        try {
+            const result = await window.electronAPI?.setModel(modelId);
+            if (!result?.success) {
+                console.warn("Model switch skipped:", result?.error || 'Missing provider key or invalid model.');
+                showMissingKeyToast(result?.error);
+                return;
+            }
+
+            setCurrentModel(modelId);
+            localStorage.setItem('cached-current-model', modelId);
+        } catch (err: any) {
+            console.error("Failed to set model:", err);
+        }
     };
 
     const panelClass = isLight
@@ -139,6 +173,15 @@ const ModelSelectorWindow = () => {
 
     return (
         <div className="w-fit h-fit bg-transparent flex flex-col">
+            <Toast
+                open={toastOpen}
+                onOpenChange={setToastOpen}
+                variant={toastMessage.variant}
+                duration={3200}
+            >
+                <ToastTitle>{toastMessage.title}</ToastTitle>
+                <ToastDescription>{toastMessage.description}</ToastDescription>
+            </Toast>
             <div className={`w-[140px] h-[200px] backdrop-blur-md border rounded-[16px] overflow-hidden shadow-2xl p-2 flex flex-col animate-scale-in origin-top-left ${panelClass}`}>
 
                 {isLoading ? (

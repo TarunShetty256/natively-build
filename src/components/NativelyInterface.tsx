@@ -44,6 +44,13 @@ import { analytics, detectProviderType } from '../lib/analytics/analytics.servic
 import { useShortcuts } from '../hooks/useShortcuts';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 import { getOverlayAppearance, OVERLAY_OPACITY_DEFAULT } from '../lib/overlayAppearance';
+import {
+    Toast,
+    ToastTitle,
+    ToastDescription,
+    ToastVariant,
+    ToastMessage
+} from './ui/toast';
 
 interface Message {
     id: string;
@@ -79,6 +86,12 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     const [messages, setMessages] = useState<Message[]>([]);
     const [isConnected, setIsConnected] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
+    const [toastOpen, setToastOpen] = useState(false);
+    const [toastMessage, setToastMessage] = useState<ToastMessage>({
+        title: '',
+        description: '',
+        variant: 'neutral'
+    });
     const [isSettingsOpen, setIsSettingsOpen] = useState(false);
     const [conversationContext, setConversationContext] = useState<string>('');
     const [isManualRecording, setIsManualRecording] = useState(false);
@@ -146,6 +159,19 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         return null;
     };
 
+    const showToast = (title: string, description: string, variant: ToastVariant = 'neutral') => {
+        setToastMessage({ title, description, variant });
+        setToastOpen(true);
+    };
+
+    const showMissingKeyToast = (backendError?: string) => {
+        showToast(
+            'API Key Needed',
+            backendError || 'Add any one cloud API key in Settings to use cloud models.',
+            'neutral'
+        );
+    };
+
     // Prevent repeated words when STT final segments overlap (common in streaming providers).
     const stripLeadingOverlap = (previousSegment: string | undefined, incomingSegment: string): string => {
         const prev = (previousSegment || '').trim();
@@ -203,20 +229,43 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             window.electronAPI.getDefaultModel()
                 .then((result: any) => {
                     if (result && result.model) {
-                        setCurrentModel(result.model);
-                        // Also set the runtime model to the default
-                        window.electronAPI.setModel(result.model).catch(() => { });
+                        // Also set the runtime model to the default.
+                        window.electronAPI.setModel(result.model)
+                            .then((setResult: any) => {
+                                if (setResult?.success) {
+                                    setCurrentModel(result.model);
+                                    return;
+                                }
+
+                                console.warn('Default model skipped:', setResult?.error || 'Missing provider key or invalid model.');
+                                showMissingKeyToast(setResult?.error);
+                                window.electronAPI.getCurrentLlmConfig?.()
+                                    .then((cfg: any) => {
+                                        if (cfg?.model) setCurrentModel(cfg.model);
+                                    })
+                                    .catch(() => { });
+                            })
+                            .catch(() => { });
                     }
                 })
                 .catch((err: any) => console.error("Failed to fetch default model:", err));
         }
     }, []);
 
-    const handleModelSelect = (modelId: string) => {
-        setCurrentModel(modelId);
+    const handleModelSelect = async (modelId: string) => {
         // Session-only: update runtime but don't persist as default
-        window.electronAPI.setModel(modelId)
-            .catch((err: any) => console.error("Failed to set model:", err));
+        try {
+            const result = await window.electronAPI.setModel(modelId);
+            if (!result?.success) {
+                console.warn('Model switch skipped:', result?.error || 'Missing provider key or invalid model.');
+                showMissingKeyToast(result?.error);
+                return;
+            }
+
+            setCurrentModel(modelId);
+        } catch (err: any) {
+            console.error("Failed to set model:", err);
+        }
     };
 
     // Listen for default model changes from Settings
@@ -1976,6 +2025,15 @@ Provide only the answer, nothing else.`;
 
     return (
         <div ref={contentRef} className="flex flex-col items-center w-fit mx-auto h-fit min-h-0 bg-transparent p-0 rounded-[24px] font-sans gap-2 overlay-text-primary">
+            <Toast
+                open={toastOpen}
+                onOpenChange={setToastOpen}
+                variant={toastMessage.variant}
+                duration={3200}
+            >
+                <ToastTitle>{toastMessage.title}</ToastTitle>
+                <ToastDescription>{toastMessage.description}</ToastDescription>
+            </Toast>
 
             <AnimatePresence>
                 {isExpanded && (
