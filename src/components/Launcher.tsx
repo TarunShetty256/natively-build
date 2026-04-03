@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { ToggleLeft, ToggleRight, Search, Zap, Calendar, ArrowRight, ArrowLeft, MoreHorizontal, Globe, Clock, ChevronRight, Settings, RefreshCw, Eye, EyeOff, Ghost, Plus, Mail, Link as LinkIcon, ChevronDown, Trash2, Bell, Check, Download, DownloadCloud, CheckCircle, AlertCircle } from 'lucide-react';
 import { generateMeetingPDF } from '../utils/pdfGenerator';
 import icon from "./icon.png";
@@ -23,6 +23,7 @@ interface Meeting {
     duration: string;
     summary: string;
     detailedSummary?: {
+        overview?: string;
         actionItems: string[];
         keyPoints: string[];
     };
@@ -97,6 +98,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     const [calendarEmail, setCalendarEmail] = useState<string | null>(null);
     const [isRefreshing, setIsRefreshing] = useState(false);
     const [showNotification, setShowNotification] = useState(false);
+    const selectedMeetingIdRef = useRef<string | null>(null);
 
     // Global search state (for AI chat overlay)
     const [isGlobalChatOpen, setIsGlobalChatOpen] = useState(false);
@@ -105,6 +107,20 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
     const fetchMeetings = () => {
         if (window.electronAPI && window.electronAPI.getRecentMeetings) {
             window.electronAPI.getRecentMeetings().then(setMeetings).catch(err => console.error("Failed to fetch meetings:", err));
+        }
+    };
+
+    const refreshSelectedMeeting = async () => {
+        const selectedId = selectedMeetingIdRef.current;
+        if (!selectedId || !window.electronAPI?.getMeetingDetails) return;
+
+        try {
+            const updatedMeeting = await window.electronAPI.getMeetingDetails(selectedId);
+            if (updatedMeeting) {
+                setSelectedMeeting(updatedMeeting);
+            }
+        } catch (err) {
+            console.error('[Launcher] Failed to refresh selected meeting details:', err);
         }
     };
 
@@ -196,6 +212,7 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         const removeMeetingsListener = window.electronAPI.onMeetingsUpdated(() => {
             console.log("Received meetings-updated event");
             fetchMeetings();
+            refreshSelectedMeeting();
         });
 
         // Simple polling for events every minute
@@ -360,6 +377,10 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         }
     };
 
+    useEffect(() => {
+        selectedMeetingIdRef.current = selectedMeeting?.id || null;
+    }, [selectedMeeting]);
+
     // Helper to format duration to mm:ss or mmm:ss
     // Helper to format duration to mm:ss or mmm:ss
     const formatDurationPill = (durationStr: string) => {
@@ -380,6 +401,28 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
         const minutes = parseInt(durationStr.replace('min', '').trim()) || 0;
         const mm = minutes.toString().padStart(2, '0');
         return `${mm}:00`;
+    };
+
+    const getMeetingSummaryPreview = (meeting: Meeting): string => {
+        const overview = meeting.detailedSummary?.overview?.trim();
+        if (overview) return overview;
+
+        const keyPoint = meeting.detailedSummary?.keyPoints?.find((point) => !!point?.trim())?.trim();
+        if (keyPoint) return keyPoint;
+
+        const actionItem = meeting.detailedSummary?.actionItems?.find((item) => !!item?.trim())?.trim();
+        if (actionItem) return actionItem;
+
+        const fallback = meeting.summary?.trim();
+        if (
+            fallback &&
+            fallback !== 'See detailed summary' &&
+            fallback !== 'Generating summary...'
+        ) {
+            return fallback;
+        }
+
+        return '';
     };
 
     return (
@@ -869,16 +912,25 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                             <section key={label}>
                                                 <h3 className="text-[13px] font-medium text-text-secondary mb-3 pl-1">{label}</h3>
                                                 <div className="space-y-1">
-                                                    {groupedMeetings[label].map((m) => (
-                                                        <motion.div
-                                                            key={m.id}
-                                                            layoutId={`meeting-${m.id}`}
-                                                            className="group relative flex items-center justify-between px-3 py-2 rounded-lg bg-transparent hover:bg-bg-elevated transition-colors"
-                                                            onClick={() => handleOpenMeeting(m)}
-                                                        >
-                                                            <div className={`font-medium text-[14px] max-w-[60%] truncate ${m.title === 'Processing...' ? 'text-blue-400 italic animate-pulse' : 'text-text-primary'}`}>
-                                                                {m.title}
-                                                            </div>
+                                                    {groupedMeetings[label].map((m) => {
+                                                        const summaryPreview = getMeetingSummaryPreview(m);
+                                                        return (
+                                                            <motion.div
+                                                                key={m.id}
+                                                                layoutId={`meeting-${m.id}`}
+                                                                className="group relative flex items-center justify-between px-3 py-2 rounded-lg bg-transparent hover:bg-bg-elevated transition-colors"
+                                                                onClick={() => handleOpenMeeting(m)}
+                                                            >
+                                                                <div className="max-w-[65%] min-w-0">
+                                                                    <div className={`font-medium text-[14px] truncate ${m.title === 'Processing...' ? 'text-blue-400 italic animate-pulse' : 'text-text-primary'}`}>
+                                                                        {m.title}
+                                                                    </div>
+                                                                    {m.title !== 'Processing...' && summaryPreview && (
+                                                                        <div className="text-[11px] text-text-tertiary truncate mt-0.5">
+                                                                            {summaryPreview}
+                                                                        </div>
+                                                                    )}
+                                                                </div>
 
                                                             {/* Time & Duration Section */}
                                                             <div className="flex items-center gap-4">
@@ -976,8 +1028,9 @@ const Launcher: React.FC<LauncherProps> = ({ onStartMeeting, onOpenSettings, onP
                                                                     </motion.div>
                                                                 )}
                                                             </AnimatePresence>
-                                                        </motion.div>
-                                                    ))}
+                                                            </motion.div>
+                                                        );
+                                                    })}
                                                 </div>
                                             </section>
                                         ))}

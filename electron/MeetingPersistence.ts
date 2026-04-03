@@ -12,6 +12,125 @@ export class MeetingPersistence {
     private session: SessionTracker;
     private llmHelper: LLMHelper;
 
+    private normalizeStringArray(input: unknown): string[] {
+        if (Array.isArray(input)) {
+            return input
+                .map((item) => (typeof item === 'string' ? item.trim() : String(item ?? '').trim()))
+                .filter((item) => item.length > 0);
+        }
+
+        if (typeof input === 'string') {
+            return input
+                .split(/\n|•|-\s+/)
+                .map((item) => item.trim())
+                .filter((item) => item.length > 0);
+        }
+
+        return [];
+    }
+
+    private extractJsonCandidate(raw: string): string | null {
+        const trimmed = (raw || '').trim();
+        if (!trimmed) return null;
+
+        const candidates: string[] = [];
+
+        const fencedMatch = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
+        if (fencedMatch?.[1]) {
+            candidates.push(fencedMatch[1].trim());
+        }
+
+        candidates.push(trimmed);
+
+        const firstBrace = trimmed.indexOf('{');
+        const lastBrace = trimmed.lastIndexOf('}');
+        if (firstBrace !== -1 && lastBrace > firstBrace) {
+            candidates.push(trimmed.slice(firstBrace, lastBrace + 1));
+        }
+
+        for (const candidate of candidates) {
+            try {
+                JSON.parse(candidate);
+                return candidate;
+            } catch {
+                // Keep trying next candidate
+            }
+        }
+
+        return null;
+    }
+
+    private parseSummaryResponse(raw: string): { overview?: string; actionItems: string[]; keyPoints: string[] } {
+        const fallback = { actionItems: [] as string[], keyPoints: [] as string[] };
+        const candidate = this.extractJsonCandidate(raw);
+        if (!candidate) return fallback;
+
+        try {
+            const parsed = JSON.parse(candidate) as Record<string, unknown>;
+
+            const overviewCandidate =
+                (typeof parsed.overview === 'string' ? parsed.overview : undefined) ||
+                (typeof parsed.summary === 'string' ? parsed.summary : undefined) ||
+                (typeof parsed.abstract === 'string' ? parsed.abstract : undefined);
+
+            const keyPoints = this.normalizeStringArray(
+                parsed.keyPoints ?? parsed.keypoints ?? parsed.key_points ?? parsed.highlights
+            );
+            const actionItems = this.normalizeStringArray(
+                parsed.actionItems ?? parsed.action_items ?? parsed.nextSteps ?? parsed.next_steps ?? parsed.followUps
+            );
+
+            return {
+                overview: overviewCandidate?.trim() || undefined,
+                keyPoints,
+                actionItems
+            };
+        } catch (e) {
+            console.error('Failed to parse normalized summary JSON', e);
+            return fallback;
+        }
+    }
+
+    private buildFallbackSummaryFromTranscript(transcript: TranscriptSegment[]): { overview?: string; actionItems: string[]; keyPoints: string[] } {
+        const lines = transcript
+            .map((segment) => (segment.text || '').replace(/\s+/g, ' ').trim())
+            .filter((line) => line.length > 0);
+
+        if (lines.length === 0) {
+            return { actionItems: [], keyPoints: [] };
+        }
+
+        const overview = lines.slice(0, 2).join(' ').slice(0, 320).trim();
+
+        const keyPoints = Array.from(new Set(lines))
+            .slice(0, 4)
+            .map((line) => line.length > 180 ? `${line.slice(0, 177).trim()}...` : line);
+
+        const actionItems = lines
+            .filter((line) => /\b(next step|follow up|action item|todo|need to|should|will)\b/i.test(line))
+            .slice(0, 4)
+            .map((line) => line.length > 180 ? `${line.slice(0, 177).trim()}...` : line);
+
+        return {
+            overview: overview || undefined,
+            keyPoints,
+            actionItems
+        };
+    }
+
+    private buildLegacySummary(summaryData: { overview?: string; actionItems: string[]; keyPoints: string[] }): string {
+        const overview = summaryData.overview?.trim();
+        if (overview) return overview;
+
+        const keyPoint = summaryData.keyPoints.find((item) => !!item?.trim())?.trim();
+        if (keyPoint) return keyPoint;
+
+        const actionItem = summaryData.actionItems.find((item) => !!item?.trim())?.trim();
+        if (actionItem) return actionItem;
+
+        return 'See detailed summary';
+    }
+
     constructor(session: SessionTracker, llmHelper: LLMHelper) {
         this.session = session;
         this.llmHelper = llmHelper;
@@ -94,7 +213,7 @@ export class MeetingPersistence {
         metadata?: { title?: string; calendarEventId?: string; source?: 'manual' | 'calendar' } | null
     ): Promise<void> {
         let title = "Untitled Session";
-        let summaryData: { actionItems: string[], keyPoints: string[] } = { actionItems: [], keyPoints: [] };
+        let summaryData: { overview?: string; actionItems: string[], keyPoints: string[] } = { actionItems: [], keyPoints: [] };
 
         // Use passed-in metadata snapshot (NOT this.session.getMeetingMetadata() which is already cleared)
         let calendarEventId: string | undefined;
@@ -143,11 +262,8 @@ export class MeetingPersistence {
                 const generatedSummary = await this.llmHelper.generateMeetingSummary(summaryPrompt, data.context.substring(0, 10000), groqSummaryPrompt);
 
                 if (generatedSummary) {
-                    const jsonMatch = generatedSummary.match(/```json\n([\s\S]*?)\n```/) || [null, generatedSummary];
-                    const jsonStr = (jsonMatch[1] || generatedSummary).trim();
-                    try {
-                        summaryData = JSON.parse(jsonStr);
-                    } catch (e) { console.error("Failed to parse summary JSON", e); }
+                    const parsedSummary = this.parseSummaryResponse(generatedSummary);
+                    summaryData = parsedSummary;
                 }
             } else {
                 console.log("Transcript too short for summary generation.");
@@ -156,17 +272,23 @@ export class MeetingPersistence {
             console.error("Error generating meeting metadata", e);
         }
 
+        if (!summaryData.overview && summaryData.actionItems.length === 0 && summaryData.keyPoints.length === 0) {
+            console.warn('[MeetingPersistence] Summary output empty; using transcript fallback summary.');
+            summaryData = this.buildFallbackSummaryFromTranscript(data.transcript);
+        }
+
         try {
             const minutes = Math.floor(data.durationMs / 60000);
             const seconds = ((data.durationMs % 60000) / 1000).toFixed(0);
             const durationStr = `${minutes}:${Number(seconds) < 10 ? '0' : ''}${seconds}`;
+            const legacySummary = this.buildLegacySummary(summaryData);
 
             const meetingData: Meeting = {
                 id: meetingId,
                 title: title,
                 date: new Date().toISOString(),
                 duration: durationStr,
-                summary: "See detailed summary",
+                summary: legacySummary,
                 detailedSummary: summaryData,
                 transcript: data.transcript,
                 usage: data.usage,

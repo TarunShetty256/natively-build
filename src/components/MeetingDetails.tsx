@@ -54,6 +54,40 @@ interface Meeting {
     }>;
 }
 
+const getOverviewWithFallback = (meeting: Meeting): string => {
+    const overview = meeting.detailedSummary?.overview?.trim();
+    if (overview) return overview;
+
+    const legacySummary = meeting.summary?.trim();
+    if (
+        legacySummary &&
+        legacySummary !== 'See detailed summary' &&
+        legacySummary !== 'Generating summary...'
+    ) {
+        return legacySummary;
+    }
+
+    const keyPoints = (meeting.detailedSummary?.keyPoints || [])
+        .map((item) => item?.trim())
+        .filter(Boolean);
+    const actionItems = (meeting.detailedSummary?.actionItems || [])
+        .map((item) => item?.trim())
+        .filter(Boolean);
+
+    const lines: string[] = [];
+    if (keyPoints.length > 0) {
+        lines.push('## Key Points');
+        lines.push(...keyPoints.map((item) => `- ${item}`));
+    }
+    if (actionItems.length > 0) {
+        if (lines.length > 0) lines.push('');
+        lines.push('## Action Items');
+        lines.push(...actionItems.map((item) => `- ${item}`));
+    }
+
+    return lines.join('\n');
+};
+
 interface MeetingDetailsProps {
     meeting: Meeting;
     onBack: () => void;
@@ -69,6 +103,7 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const [isCopied, setIsCopied] = useState(false);
     const [isChatOpen, setIsChatOpen] = useState(false);
     const [submittedQuery, setSubmittedQuery] = useState('');
+    const summaryOverview = getOverviewWithFallback(meeting);
 
     const handleSubmitQuestion = () => {
         if (query.trim()) {
@@ -90,19 +125,19 @@ const MeetingDetails: React.FC<MeetingDetailsProps> = ({ meeting: initialMeeting
     const handleCopy = async () => {
         let textToCopy = '';
 
-        if (activeTab === 'summary' && meeting.detailedSummary) {
+        if (activeTab === 'summary') {
             textToCopy = `
 Meeting: ${meeting.title}
 Date: ${new Date(meeting.date).toLocaleDateString()}
 
 OVERVIEW:
-${meeting.detailedSummary.overview || ''}
+    ${summaryOverview || ''}
 
 ACTION ITEMS:
-${meeting.detailedSummary.actionItems?.map(item => `- ${item}`).join('\n') || 'None'}
+${meeting.detailedSummary?.actionItems?.map(item => `- ${item}`).join('\n') || 'None'}
 
 KEY POINTS:
-${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'None'}
+${meeting.detailedSummary?.keyPoints?.map(item => `- ${item}`).join('\n') || 'None'}
             `.trim();
         } else if (activeTab === 'transcript' && meeting.transcript) {
             textToCopy = meeting.transcript.map(t => `[${formatTime(t.timestamp)}] ${t.speaker === 'user' ? 'Me' : 'Them'}: ${t.text}`).join('\n');
@@ -269,7 +304,7 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                                             a: ({ node, ...props }) => <a className="text-blue-500 hover:underline" {...props} />,
                                         }}
                                     >
-                                        {meeting.detailedSummary?.overview || ''}
+                                        {summaryOverview || ''}
                                     </ReactMarkdown>
                                 </div>
 
@@ -523,7 +558,7 @@ ${meeting.detailedSummary.keyPoints?.map(item => `- ${item}`).join('\n') || 'Non
                 meetingContext={{
                     id: meeting.id,  // Required for RAG queries
                     title: meeting.title,
-                    summary: meeting.detailedSummary?.overview,
+                    summary: summaryOverview,
                     keyPoints: meeting.detailedSummary?.keyPoints,
                     actionItems: meeting.detailedSummary?.actionItems,
                     transcript: meeting.transcript
