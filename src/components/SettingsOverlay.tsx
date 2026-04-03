@@ -454,7 +454,6 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
 
     const startAotPolling = () => {
         if (aotPollRef.current !== null) return;
-        stopAotPolling();
         let attempts = 0;
         aotPollRef.current = window.setInterval(async () => {
             attempts += 1;
