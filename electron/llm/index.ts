@@ -19,6 +19,11 @@ export {
 } from "./transcriptCleaner";
 export type { TranscriptTurn } from "./transcriptCleaner";
 export {
+    extractLatestQuestionFromTurns,
+    buildQuestionFocusedTranscriptWindow
+} from "./QuestionExtractor";
+export type { QuestionExtractionResult } from "./QuestionExtractor";
+export {
     buildTemporalContext,
     formatTemporalContextForPrompt
 } from "./TemporalContextBuilder";

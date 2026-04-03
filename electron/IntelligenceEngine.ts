@@ -4,12 +4,13 @@
 
 import { EventEmitter } from 'events';
 import { LLMHelper } from './LLMHelper';
-import { SessionTracker, TranscriptSegment, SuggestionTrigger, ContextItem } from './SessionTracker';
+import { SessionTracker, TranscriptSegment, SuggestionTrigger } from './SessionTracker';
+import { InterviewStateManager } from './InterviewStateManager';
 import {
     AnswerLLM, AssistLLM, BrainstormLLM, ClarifyLLM, CodeHintLLM, FollowUpLLM, RecapLLM,
     FollowUpQuestionsLLM, WhatToAnswerLLM,
-    prepareTranscriptForWhatToAnswer, buildTemporalContext,
-    AssistantResponse as LLMAssistantResponse, classifyIntent
+    extractLatestQuestionFromTurns, buildQuestionFocusedTranscriptWindow,
+    classifyIntent
 } from './llm';
 
 // Mode types
@@ -86,6 +87,9 @@ export class IntelligenceEngine extends EventEmitter {
     // Reference to SessionTracker for context
     private session: SessionTracker;
 
+    // Minimal state for the live interview loop
+    private stateManager: InterviewStateManager;
+
     // Timestamps for tracking
     private lastTranscriptTime: number = 0;
     private lastTriggerTime: number = 0;
@@ -95,6 +99,7 @@ export class IntelligenceEngine extends EventEmitter {
         super();
         this.llmHelper = llmHelper;
         this.session = session;
+        this.stateManager = new InterviewStateManager();
         this.initializeLLMs();
     }
 
@@ -248,16 +253,21 @@ export class IntelligenceEngine extends EventEmitter {
         this.lastTriggerTime = now;
 
         try {
+            const explicitQuestion = (question || '').trim();
+
             if (!this.whatToAnswerLLM) {
                 if (!this.answerLLM) {
                     this.setMode('idle');
                     return "Please configure your API Keys in Settings to use this feature.";
                 }
                 const context = this.session.getFormattedContext(180);
-                const answer = await this.answerLLM.generate(question || '', context);
+                const manualQuestion = explicitQuestion || this.stateManager.getState().lastQuestion || '';
+                const answer = await this.answerLLM.generate(manualQuestion, context);
                 if (answer) {
                     this.session.addAssistantMessage(answer);
-                    this.emit('suggested_answer', answer, question || 'inferred', confidence);
+                    this.stateManager.setLastQuestion(manualQuestion || null);
+                    this.stateManager.setLastAnswer(answer);
+                    this.emit('suggested_answer', answer, manualQuestion || 'inferred', confidence);
                 }
                 this.setMode('idle');
                 return answer || "Could you repeat that? I want to make sure I address your question properly.";
@@ -289,17 +299,25 @@ export class IntelligenceEngine extends EventEmitter {
                 timestamp: item.timestamp
             }));
 
-            const preparedTranscript = prepareTranscriptForWhatToAnswer(transcriptTurns, 12);
+            const extracted = extractLatestQuestionFromTurns(
+                transcriptTurns,
+                lastInterim?.text || null
+            );
 
-            const lastInterviewerTurn = this.session.getLastInterviewerTurn();
-            const freshestInterviewerTurn = (lastInterim?.text || '').trim() || (lastInterviewerTurn || '').trim();
-            const inferredQuestion = (question || '').trim() || freshestInterviewerTurn || 'inferred';
+            const runtimeState = this.stateManager.getState();
+            const resolvedQuestion = explicitQuestion || extracted.question || runtimeState.lastQuestion || '';
+            const inferredQuestion = resolvedQuestion || 'inferred';
+            const questionWindow = extracted.transcriptWindow || buildQuestionFocusedTranscriptWindow(transcriptTurns, 8);
+
+            if (resolvedQuestion) {
+                this.stateManager.setLastQuestion(resolvedQuestion);
+            }
 
             // If this is an inferred request with unchanged source text+context, skip regeneration
             // for a short window to avoid repeating stale answers in a loop.
-            const isInferredRun = !(question && question.trim().length > 0);
+            const isInferredRun = !(explicitQuestion.length > 0);
             const hasImages = !!(imagePaths && imagePaths.length > 0);
-            const inputKey = `${freshestInterviewerTurn}\n---\n${preparedTranscript}`;
+            const inputKey = `${inferredQuestion}\n---\n${questionWindow}`;
             if (
                 isInferredRun &&
                 !hasImages &&
@@ -311,25 +329,40 @@ export class IntelligenceEngine extends EventEmitter {
                 return this.lastWhatToSayOutput;
             }
 
-            const temporalContext = buildTemporalContext(
-                contextItems,
-                this.session.getAssistantResponseHistory(),
-                180
-            );
-
             const intentResult = await classifyIntent(
-                freshestInterviewerTurn || lastInterviewerTurn,
-                preparedTranscript,
+                resolvedQuestion || null,
+                questionWindow,
                 this.session.getAssistantResponseHistory().length
             );
 
-            console.log(`[IntelligenceEngine] Temporal RAG: ${temporalContext.previousResponses.length} responses, tone: ${temporalContext.toneSignals[0]?.type || 'neutral'}, intent: ${intentResult.intent}${imagePaths?.length ? `, with ${imagePaths.length} image(s)` : ''}`);
+            const knowledgeOrchestrator = this.llmHelper.getKnowledgeOrchestrator?.();
+            const personaEnabled = !!knowledgeOrchestrator?.isKnowledgeMode?.();
+            const profileData = knowledgeOrchestrator?.getProfileData?.();
+            const resume = profileData
+                ? JSON.stringify({
+                    identity: profileData.identity,
+                    skills: profileData.skills,
+                    experience: (profileData.experience || []).slice(0, 5),
+                    projects: (profileData.projects || []).slice(0, 3),
+                    education: (profileData.education || []).slice(0, 2)
+                })
+                : '';
+
+            console.log(`[IntelligenceEngine] Question-focused generation: intent=${intentResult.intent}, source=${extracted.source}${imagePaths?.length ? `, with ${imagePaths.length} image(s)` : ''}`);
 
             const generationId = ++this.currentGenerationId;
             let fullAnswer = "";
             // RC-03 fix: hold a reference to the generator so we can call .return()
             // to properly terminate the network request when a new generation starts.
-            const stream = this.whatToAnswerLLM.generateStream(preparedTranscript, temporalContext, intentResult, imagePaths);
+            const stream = this.whatToAnswerLLM.generateStream({
+                latestQuestion: resolvedQuestion || 'Please repeat the interviewer question clearly.',
+                transcriptWindow: questionWindow,
+                intentResult,
+                lastAnswer: runtimeState.lastAnswer,
+                modeHint: 'what_to_say',
+                resume,
+                personaEnabled
+            }, imagePaths);
             let streamAborted = false;
 
             for await (const token of stream) {
@@ -368,6 +401,10 @@ export class IntelligenceEngine extends EventEmitter {
             }
 
             this.session.addAssistantMessage(fullAnswer);
+            this.stateManager.setLastAnswer(fullAnswer);
+            if (resolvedQuestion) {
+                this.stateManager.setLastQuestion(resolvedQuestion);
+            }
 
             this.lastWhatToSayInputKey = inputKey;
             this.lastWhatToSayOutput = fullAnswer;
@@ -400,7 +437,8 @@ export class IntelligenceEngine extends EventEmitter {
      */
     async runFollowUp(intent: string, userRequest?: string): Promise<string | null> {
         console.log(`[IntelligenceEngine] runFollowUp called with intent: ${intent}`);
-        const lastMsg = this.session.getLastAssistantMessage();
+        const runtimeState = this.stateManager.getState();
+        const lastMsg = runtimeState.lastAnswer || this.session.getLastAssistantMessage();
         if (!lastMsg) {
             console.warn('[IntelligenceEngine] No lastAssistantMessage found for follow-up');
             return null;
@@ -415,7 +453,15 @@ export class IntelligenceEngine extends EventEmitter {
                 return null;
             }
 
-            const context = this.session.getFormattedContext(60);
+            const contextParts: string[] = [];
+            if (runtimeState.lastQuestion) {
+                contextParts.push(`[LATEST QUESTION]: ${runtimeState.lastQuestion}`);
+            }
+            const formattedContext = this.session.getFormattedContext(60);
+            if (formattedContext) {
+                contextParts.push(formattedContext);
+            }
+            const context = contextParts.join('\n\n');
             const refinementRequest = userRequest || intent;
 
             const generationId = ++this.currentGenerationId;
@@ -440,6 +486,7 @@ export class IntelligenceEngine extends EventEmitter {
 
             if (!streamAborted && fullRefined) {
                 this.session.addAssistantMessage(fullRefined);
+                this.stateManager.setLastAnswer(fullRefined);
                 this.emit('refined_answer', fullRefined, intent);
 
                 const intentMap: Record<string, string> = {
@@ -550,9 +597,24 @@ export class IntelligenceEngine extends EventEmitter {
                 return null;
             }
 
-            const rawContext = this.session.getFormattedContext(180);
-            // If no transcript yet, use a generic prompt — the LLM will ask a scoping question
-            const context = rawContext || '[No transcript available yet. The candidate just joined the interview. Generate an opening clarifying question to understand the scope and constraints of the upcoming problem.]';
+            const contextItems = this.session.getContext(180);
+            const transcriptTurns = contextItems.map(item => ({
+                role: item.role,
+                text: item.text,
+                timestamp: item.timestamp
+            }));
+            const extracted = extractLatestQuestionFromTurns(
+                transcriptTurns,
+                this.session.getLastInterimInterviewer()?.text || null
+            );
+
+            const state = this.stateManager.getState();
+            const focusQuestion = state.lastQuestion || extracted.question;
+            const transcriptWindow = extracted.transcriptWindow || buildQuestionFocusedTranscriptWindow(transcriptTurns, 8);
+
+            const context = focusQuestion
+                ? `LATEST QUESTION TO CLARIFY:\n${focusQuestion}\n\nRECENT TRANSCRIPT:\n${transcriptWindow}`
+                : '[No transcript available yet. The candidate just joined the interview. Generate an opening clarifying question to understand the scope and constraints of the upcoming problem.]';
 
             const generationId = ++this.currentGenerationId;
             let fullClarification = "";
@@ -662,6 +724,7 @@ export class IntelligenceEngine extends EventEmitter {
     async runManualAnswer(question: string): Promise<string | null> {
         this.emit('manual_answer_started');
         this.setMode('manual');
+        this.stateManager.setLastQuestion(question);
 
         try {
             if (!this.answerLLM) {
@@ -674,6 +737,7 @@ export class IntelligenceEngine extends EventEmitter {
 
             if (answer) {
                 this.session.addAssistantMessage(answer);
+                this.stateManager.setLastAnswer(answer);
                 this.emit('manual_answer_result', answer, question);
 
                 this.session.pushUsage({
@@ -790,9 +854,23 @@ export class IntelligenceEngine extends EventEmitter {
             }
 
             let context = this.session.getFormattedContext(180);
-            // Prepend the problem statement so the LLM knows exactly what to brainstorm
+            const state = this.stateManager.getState();
+            const contextItems = this.session.getContext(180);
+            const transcriptTurns = contextItems.map(item => ({
+                role: item.role,
+                text: item.text,
+                timestamp: item.timestamp
+            }));
+            const extracted = extractLatestQuestionFromTurns(
+                transcriptTurns,
+                this.session.getLastInterimInterviewer()?.text || null
+            );
+
+            // Prepend a specific problem/question so brainstorm mode stays focused.
             const resolvedProblem = problemStatement?.trim() ||
-                this.session.getDetectedCodingQuestion().question?.trim();
+                this.session.getDetectedCodingQuestion().question?.trim() ||
+                state.lastQuestion ||
+                extracted.question;
 
             if (!context.trim() && !resolvedProblem && (!imagePaths || imagePaths.length === 0)) {
                 this.setMode('idle');
@@ -803,6 +881,7 @@ export class IntelligenceEngine extends EventEmitter {
             }
 
             if (resolvedProblem) {
+                this.stateManager.setLastQuestion(resolvedProblem);
                 context = `<problem_statement>\n${resolvedProblem}\n</problem_statement>\n\n${context}`;
             }
             const generationId = ++this.currentGenerationId;
@@ -854,6 +933,7 @@ export class IntelligenceEngine extends EventEmitter {
     // ============================================
 
     private setMode(mode: IntelligenceMode): void {
+        this.stateManager.setMode(mode);
         if (this.activeMode !== mode) {
             this.activeMode = mode;
             this.emit('mode_changed', mode);
@@ -869,6 +949,7 @@ export class IntelligenceEngine extends EventEmitter {
      */
     reset(): void {
         this.activeMode = 'idle';
+        this.stateManager.reset();
         this.currentGenerationId++; // Increment to break all active LLM streams
         this.lastWhatToSayInputKey = null;
         this.lastWhatToSayOutput = null;
