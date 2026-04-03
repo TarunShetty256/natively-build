@@ -162,6 +162,14 @@ export class IntelligenceEngine extends EventEmitter {
         if (trigger.confidence < 0.5) {
             return;
         }
+
+        // Auto suggestion triggers should never preempt explicit user actions
+        // like Clarify/Recap/Follow-up. Those modes set activeMode away from idle.
+        if (this.activeMode !== 'idle' && this.activeMode !== 'what_to_say') {
+            console.log(`[IntelligenceEngine] Skipping auto trigger while mode=${this.activeMode}`);
+            return;
+        }
+
         await this.runWhatShouldISay(trigger.lastQuestion, trigger.confidence);
     }
 
@@ -347,6 +355,18 @@ export class IntelligenceEngine extends EventEmitter {
                 fullAnswer = "Could you repeat that? I want to make sure I address your question properly.";
             }
 
+            const normalizedAnswer = fullAnswer.trim().toLowerCase();
+            const providerUnavailableMessage =
+                normalizedAnswer.includes('no ai provider') ||
+                normalizedAnswer.includes('no ai providers configured') ||
+                normalizedAnswer.includes('all ai services are currently unavailable');
+
+            if (providerUnavailableMessage) {
+                this.emit('error', new Error(fullAnswer), 'what_to_say');
+                this.setMode('idle');
+                return null;
+            }
+
             this.session.addAssistantMessage(fullAnswer);
 
             this.lastWhatToSayInputKey = inputKey;
@@ -370,7 +390,7 @@ export class IntelligenceEngine extends EventEmitter {
         } catch (error) {
             this.emit('error', error as Error, 'what_to_say');
             this.setMode('idle');
-            return "Could you repeat that? I want to make sure I address your question properly.";
+            return null;
         }
     }
 

@@ -202,7 +202,16 @@ export class LLMHelper {
   }
 
   private isGroqModel(modelId: string): boolean {
-    return modelId.startsWith("llama-") || modelId.startsWith("mixtral-") || modelId.startsWith("gemma-");
+    return (
+      modelId.startsWith("llama-") ||
+      modelId.startsWith("mixtral-") ||
+      modelId.startsWith("gemma-") ||
+      modelId.startsWith("allam-") ||
+      modelId.startsWith("qwen-") ||
+      modelId.startsWith("deepseek-") ||
+      modelId.startsWith("mistral-") ||
+      modelId.startsWith("compound-")
+    );
   }
 
   private isGeminiModel(modelId: string): boolean {
@@ -853,7 +862,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       if (this.groqFastTextMode && !isMultimodal && this.groqClient) {
         console.log(`[LLMHelper] ⚡️ Groq Fast Text Mode Active. Routing to Groq...`);
         try {
-          return await this.generateWithGroq(combinedMessages.groq);
+          return await this.generateWithGroq(
+            combinedMessages.groq,
+            this.isGroqModel(this.currentModelId) ? this.currentModelId : GROQ_MODEL
+          );
         } catch (e: any) {
           console.warn("[LLMHelper] Groq Fast Text failed, falling back to standard routing:", e.message);
           // Fall through to standard routing
@@ -898,7 +910,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         if (isMultimodal && imagePaths) {
           return await this.generateWithGroqMultimodal(userContent, imagePaths, openaiSystemPrompt);
         }
-        return await this.generateWithGroq(combinedMessages.groq);
+        return await this.generateWithGroq(combinedMessages.groq, this.currentModelId);
       }
 
       // Fallback (Gemini) - logic handled below by SMART DYNAMIC FALLBACK list
@@ -948,7 +960,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       } else {
         // TEXT-ONLY: All providers including Groq
         if (this.groqClient) {
-          providers.push({ name: `Groq (${textGroq})`, execute: () => this.generateWithGroq(combinedMessages.groq) });
+          providers.push({ name: `Groq (${textGroq})`, execute: () => this.generateWithGroq(combinedMessages.groq, textGroq) });
         }
         if (this.client) {
           providers.push({
@@ -1088,7 +1100,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     // Priority 5: Groq (Fallback despite JSON hallucination risks)
     if (this.groqClient) {
-      providers.push({ name: `Groq (${GROQ_MODEL}) fallback`, execute: () => this.generateWithGroq(message) });
+      providers.push({ name: `Groq (${GROQ_MODEL}) fallback`, execute: () => this.generateWithGroq(message, GROQ_MODEL) });
     }
 
     // Priority 6: Ollama (on-device fallback — last resort, no cloud dependency)
@@ -1129,14 +1141,16 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     throw new Error('All reasoning models failed for structured generation after 3 attempts');
   }
 
-  private async generateWithGroq(fullMessage: string): Promise<string> {
+  private async generateWithGroq(fullMessage: string, modelOverride?: string): Promise<string> {
     if (!this.groqClient) throw new Error("Groq client not initialized");
+
+    const model = modelOverride || (this.isGroqModel(this.currentModelId) ? this.currentModelId : GROQ_MODEL);
 
     await this.rateLimiters.groq.acquire();
 
     // Non-streaming Groq call
     const response = await this.groqClient.chat.completions.create({
-      model: GROQ_MODEL,
+      model,
       messages: [{ role: "user", content: fullMessage }],
       temperature: 0.4,
       max_tokens: 8192,
@@ -1614,7 +1628,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
           }
           return {
             name: `Groq (${modelId})`,
-            execute: () => this.generateWithGroq(`${systemPrompt}\n\n${userPrompt}`)
+            execute: () => this.generateWithGroq(`${systemPrompt}\n\n${userPrompt}`, modelId)
           };
 
         default:
@@ -1839,7 +1853,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     } else {
       // TEXT-ONLY PROVIDER ORDER: Groq → OpenAI → Claude → Gemini Flash → Gemini Pro
       if (this.groqClient) {
-        providers.push({ name: `Groq (${textGroq})`, execute: () => this.streamWithGroq(combinedMessages.groq) });
+        providers.push({ name: `Groq (${textGroq})`, execute: () => this.streamWithGroq(combinedMessages.groq, textGroq) });
       }
       if (this.openaiClient) {
         providers.push({ name: `OpenAI (${textOpenAI})`, execute: () => this.streamWithOpenai(userContent, openaiSystemPrompt, textOpenAI) });
@@ -1976,7 +1990,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         const groqSystem = systemPromptOverride || GROQ_SYSTEM_PROMPT;
         const finalGroqSystem = this.injectLanguageInstruction(groqSystem);
         const groqFullMessage = `${finalGroqSystem}\n\n${userContent}`;
-        yield* this.streamWithGroq(groqFullMessage);
+        yield* this.streamWithGroq(
+          groqFullMessage,
+          this.isGroqModel(this.currentModelId) ? this.currentModelId : GROQ_MODEL
+        );
         return;
       } catch (e: any) {
         console.warn("[LLMHelper] Groq Fast Text streaming failed, falling back:", e.message);
@@ -2049,7 +2066,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       const groqSystem = systemPromptOverride ? baseSystemPrompt : GROQ_SYSTEM_PROMPT;
       const finalGroqSystem = this.injectLanguageInstruction(groqSystem);
       const groqFullMessage = `${finalGroqSystem}\n\n${userContent}`;
-      yield* this.streamWithGroq(groqFullMessage);
+      yield* this.streamWithGroq(groqFullMessage, this.currentModelId);
       return;
     }
 
@@ -2073,11 +2090,13 @@ This rule overrides ALL other instructions including formatting, brevity, or out
   /**
    * Stream response from Groq
    */
-  private async * streamWithGroq(fullMessage: string): AsyncGenerator<string, void, unknown> {
+  private async * streamWithGroq(fullMessage: string, modelOverride?: string): AsyncGenerator<string, void, unknown> {
     if (!this.groqClient) throw new Error("Groq client not initialized");
 
+    const model = modelOverride || (this.isGroqModel(this.currentModelId) ? this.currentModelId : GROQ_MODEL);
+
     const stream = await this.groqClient.chat.completions.create({
-      model: GROQ_MODEL,
+      model,
       messages: [{ role: "user", content: fullMessage }],
       stream: true,
       temperature: 0.4,
@@ -2631,7 +2650,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
   public getCurrentProvider(): "ollama" | "gemini" | "custom" {
     if (this.customProvider) return "custom";
-    return this.useOllama ? "ollama" : "gemini";
+    if (this.useOllama) return "ollama";
+    // Keep return type stable for existing renderer typings; non-Ollama cloud providers
+    // are still represented as "gemini" in this legacy shape.
+    return "gemini";
   }
 
   public getCurrentModel(): string {

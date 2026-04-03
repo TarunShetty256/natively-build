@@ -26,11 +26,42 @@ export class WhatToAnswerLLM {
         imagePaths?: string[]
     ): AsyncGenerator<string> {
         try {
+            const isOllama = this.llmHelper.getCurrentProvider() === 'ollama';
+
+            const lines = (cleanedTranscript || '')
+                .split('\n')
+                .map(l => l.trim())
+                .filter(Boolean);
+
+            const latestInterviewerLine = [...lines].reverse().find(l => l.startsWith('[INTERVIEWER')) || '';
+            const latestInterviewerQuestion = latestInterviewerLine
+                .replace(/^\[INTERVIEWER[^\]]*\]:\s*/i, '')
+                .trim();
+
+            // Smaller local models perform better with concise, role-focused context.
+            const compactConversation = isOllama
+                ? lines
+                    .filter(l => !l.startsWith('[ASSISTANT'))
+                    .slice(-8)
+                    .join('\n')
+                : cleanedTranscript;
+
             // Build a rich message context
             // Note: We can't easily inject the complex temporal/intent logic into universal prompt *variables* 
             // but we can prepend it to the message.
 
             let contextParts: string[] = [];
+
+            if (latestInterviewerQuestion) {
+                contextParts.push(`<focus_question>
+LATEST INTERVIEWER QUESTION: ${latestInterviewerQuestion}
+</focus_question>`);
+                contextParts.push(`<critical_rules>
+Answer ONLY the latest interviewer question above.
+Do not repeat a previous self-introduction unless interviewer explicitly asks to introduce yourself again.
+Avoid repeating your immediately previous answer.
+</critical_rules>`);
+            }
 
             if (intentResult) {
                 contextParts.push(`<intent_and_shape>
@@ -48,8 +79,8 @@ ANSWER SHAPE: ${intentResult.answerShape}
 
             const extraContext = contextParts.join('\n\n');
             const fullMessage = extraContext
-                ? `${extraContext}\n\nCONVERSATION:\n${cleanedTranscript}`
-                : cleanedTranscript;
+                ? `${extraContext}\n\nCONVERSATION:\n${compactConversation}`
+                : compactConversation;
 
             // Use Universal Prompt
             // Note: WhatToAnswer has a very specific prompt. 
@@ -59,7 +90,7 @@ ANSWER SHAPE: ${intentResult.answerShape}
 
         } catch (error) {
             console.error("[WhatToAnswerLLM] Stream failed:", error);
-            yield "Could you repeat that? I want to make sure I address your question properly.";
+            throw error;
         }
     }
 }

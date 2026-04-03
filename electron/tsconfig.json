@@ -8,6 +8,7 @@
     "noImplicitAny": true,
     "sourceMap": true,
     "jsx": "react-jsx",
+    "ignoreDeprecations": "6.0",
     "baseUrl": ".",
     "rootDir": "..",
     "outDir": "../dist-electron",
