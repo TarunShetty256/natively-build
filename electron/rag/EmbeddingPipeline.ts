@@ -32,7 +32,7 @@ export class EmbeddingPipeline {
     private vectorStore: VectorStore;
     private isProcessing = false;
     private initPromise: Promise<void> | null = null;
-    /** Tracks the config used in the most recent successful initialize() call to enable idempotency. */
+    /** Tracks the config used in the most recent initialize() call to enable idempotency. */
     private _lastConfig: AppAPIConfig | null = null;
 
     constructor(db: Database.Database, vectorStore: VectorStore) {
@@ -42,15 +42,14 @@ export class EmbeddingPipeline {
 
     /**
      * Initialize with provider config (picks best available provider)
-     * Idempotent: re-initialization only runs if the new config adds at least one
-     * key/URL that was not present in the last config (e.g., Ollama becomes available,
-     * or a cloud API key is loaded from CredentialsManager after startup).
-     * If the config is unchanged or strictly worse, the existing initPromise is returned.
+     * Idempotent: re-initialization only runs if any key/URL value changed.
+     * This includes key rotation (old key -> new key), key removal, and Ollama URL changes.
+     * If the config is unchanged, the existing initPromise is returned.
      */
     async initialize(config: AppAPIConfig): Promise<void> {
-        // Skip if config is identical or has no new information
-        if (this._lastConfig && !this._isConfigImprovement(this._lastConfig, config)) {
-            console.log('[EmbeddingPipeline] Config unchanged or no new keys — skipping re-initialization');
+        // Skip if config is identical
+        if (this._lastConfig && !this._shouldReinitialize(this._lastConfig, config)) {
+            console.log('[EmbeddingPipeline] Config unchanged — skipping re-initialization');
             return this.initPromise ?? Promise.resolve();
         }
         this._lastConfig = { ...config };
@@ -60,16 +59,16 @@ export class EmbeddingPipeline {
     }
 
     /**
-     * Returns true if `next` provides at least one credential that `prev` did not have.
-     * Prevents redundant re-initialization when the same keys are passed again.
+     * Returns true if any effective config value changed.
+     * This allows runtime key rotation and key removal to re-resolve providers.
      */
-    private _isConfigImprovement(prev: AppAPIConfig, next: AppAPIConfig): boolean {
-        const hasNew = (prevVal: string | undefined, nextVal: string | undefined) =>
-            !prevVal && !!nextVal;
+    private _shouldReinitialize(prev: AppAPIConfig, next: AppAPIConfig): boolean {
+        const normalize = (value?: string) => value?.trim() || undefined;
+
         return (
-            hasNew(prev.openaiKey, next.openaiKey) ||
-            hasNew(prev.geminiKey, next.geminiKey) ||
-            hasNew(prev.ollamaUrl, next.ollamaUrl)
+            normalize(prev.openaiKey) !== normalize(next.openaiKey) ||
+            normalize(prev.geminiKey) !== normalize(next.geminiKey) ||
+            normalize(prev.ollamaUrl) !== normalize(next.ollamaUrl)
         );
     }
 
@@ -398,20 +397,63 @@ export class EmbeddingPipeline {
      */
 
     async getEmbedding(text: string): Promise<number[]> {
-        if (!this.provider) {
-            throw new Error('Embedding provider not initialized');
-        }
-        return this.provider.embed(text);
+        return this.embedWithFailover(text, 'document');
     }
 
     /**
      * Get embedding for a search query (may use different prefix for asymmetric models)
      */
     async getEmbeddingForQuery(text: string): Promise<number[]> {
+        return this.embedWithFailover(text, 'query');
+    }
+
+    /**
+     * Embed text with runtime failover for synchronous embedding paths.
+     * Queue processing has its own retry/fallback logic; this path is used by
+     * KnowledgeOrchestrator ingestion and query-time embedding.
+     */
+    private async embedWithFailover(text: string, mode: 'document' | 'query'): Promise<number[]> {
         if (!this.provider) {
             throw new Error('Embedding provider not initialized');
         }
-        return this.provider.embedQuery(text);
+
+        const primary = this.provider;
+        const run = (p: IEmbeddingProvider) => mode === 'query' ? p.embedQuery(text) : p.embed(text);
+
+        try {
+            return await run(primary);
+        } catch (primaryErr: any) {
+            const fallback = this.fallbackProvider;
+            const hasDistinctFallback = !!fallback && fallback !== primary;
+
+            if (!hasDistinctFallback) {
+                throw primaryErr;
+            }
+
+            console.warn(
+                `[EmbeddingPipeline] ${mode} embedding failed with ${primary.name}: ${primaryErr?.message || primaryErr}. ` +
+                `Trying fallback provider ${fallback.name}.`
+            );
+
+            try {
+                const result = await run(fallback);
+
+                // Promote fallback as primary for subsequent direct embedding calls
+                // to prevent repeated failures/rollbacks during document ingestion.
+                this.provider = fallback;
+                try {
+                    this.db.prepare("INSERT OR REPLACE INTO app_state (key, value) VALUES ('last_embedding_provider', ?)").run(fallback.name);
+                } catch (_) { /* non-fatal */ }
+
+                console.log(`[EmbeddingPipeline] Promoted fallback provider as active primary: ${fallback.name}`);
+                return result;
+            } catch (fallbackErr: any) {
+                throw new Error(
+                    `Embedding failed with primary provider (${primary.name}): ${primaryErr?.message || primaryErr}; ` +
+                    `fallback provider (${fallback.name}) also failed: ${fallbackErr?.message || fallbackErr}`
+                );
+            }
+        }
     }
 
     /**

@@ -5,6 +5,13 @@ export const STANDARD_CLOUD_MODELS: Record<string, {
     descs: string[];
     pmKey: 'geminiPreferredModel' | 'openaiPreferredModel' | 'claudePreferredModel' | 'groqPreferredModel';
 }> = {
+    groq: {
+        hasKeyCheck: (creds) => !!creds?.hasGroqKey,
+        ids: ['llama-3.3-70b-versatile'],
+        names: ['Groq Llama 3.3'],
+        descs: ['Ultra Fast'],
+        pmKey: 'groqPreferredModel'
+    },
     gemini: {
         hasKeyCheck: (creds) => !!creds?.hasGeminiKey,
         ids: ['gemini-3.1-flash-lite-preview', 'gemini-3.1-pro-preview'],
@@ -25,13 +32,6 @@ export const STANDARD_CLOUD_MODELS: Record<string, {
         names: ['Sonnet 4.6'],
         descs: ['Anthropic'],
         pmKey: 'claudePreferredModel'
-    },
-    groq: {
-        hasKeyCheck: (creds) => !!creds?.hasGroqKey,
-        ids: ['llama-3.3-70b-versatile'],
-        names: ['Groq Llama 3.3'],
-        descs: ['Ultra Fast'],
-        pmKey: 'groqPreferredModel'
     },
 };
 

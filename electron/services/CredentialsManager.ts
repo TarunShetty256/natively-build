@@ -162,7 +162,13 @@ export class CredentialsManager {
         return this.credentials.aiResponseLanguage || 'English';
     }
     public getDefaultModel(): string {
-        return this.credentials.defaultModel || 'gemini-3.1-flash-lite-preview';
+        if (this.credentials.defaultModel) {
+            return this.credentials.defaultModel;
+        }
+        if (this.credentials.groqApiKey) {
+            return 'llama-3.3-70b-versatile';
+        }
+        return 'gemini-3.1-flash-lite-preview';
     }
 
     public getAllCredentials(): StoredCredentials {
@@ -174,25 +180,29 @@ export class CredentialsManager {
     // =========================================================================
 
     public setGeminiApiKey(key: string): void {
-        this.credentials.geminiApiKey = key;
+        const sanitized = key.trim();
+        this.credentials.geminiApiKey = sanitized || undefined;
         this.saveCredentials();
         console.log('[CredentialsManager] Gemini API Key updated');
     }
 
     public setGroqApiKey(key: string): void {
-        this.credentials.groqApiKey = key;
+        const sanitized = key.trim();
+        this.credentials.groqApiKey = sanitized || undefined;
         this.saveCredentials();
         console.log('[CredentialsManager] Groq API Key updated');
     }
 
     public setOpenaiApiKey(key: string): void {
-        this.credentials.openaiApiKey = key;
+        const sanitized = key.trim();
+        this.credentials.openaiApiKey = sanitized || undefined;
         this.saveCredentials();
         console.log('[CredentialsManager] OpenAI API Key updated');
     }
 
     public setClaudeApiKey(key: string): void {
-        this.credentials.claudeApiKey = key;
+        const sanitized = key.trim();
+        this.credentials.claudeApiKey = sanitized || undefined;
         this.saveCredentials();
         console.log('[CredentialsManager] Claude API Key updated');
     }

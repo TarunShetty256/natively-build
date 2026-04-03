@@ -107,7 +107,7 @@ export const AIProvidersSettings: React.FC = () => {
     const [isRefreshingOllama, setIsRefreshingOllama] = useState(false);
 
     // --- Default Model ---
-    const [defaultModel, setDefaultModel] = useState<string>('gemini-3.1-flash-lite-preview');
+    const [defaultModel, setDefaultModel] = useState<string>('llama-3.3-70b-versatile');
     const [fastResponseMode, setFastResponseMode] = useState(false);
 
     // --- Dynamic Model Discovery ---
@@ -428,7 +428,9 @@ export const AIProvidersSettings: React.FC = () => {
                         value={defaultModel}
                         options={(() => {
                             const opts: { id: string; name: string }[] = [];
-                            for (const [prov, cfg] of Object.entries(STANDARD_CLOUD_MODELS)) {
+                            const providerOrder = ['groq', 'gemini', 'openai', 'claude'] as const;
+                            for (const prov of providerOrder) {
+                                const cfg = STANDARD_CLOUD_MODELS[prov];
                                 if (!hasStoredKey[prov as keyof typeof hasStoredKey]) continue;
                                 cfg.ids.forEach((id, i) => opts.push({ id, name: cfg.names[i] }));
                                 const pm = preferredModels[prov as keyof typeof preferredModels];

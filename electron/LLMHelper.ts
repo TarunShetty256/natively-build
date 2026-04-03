@@ -116,28 +116,58 @@ export class LLMHelper {
   }
 
   public setApiKey(apiKey: string) {
-    this.apiKey = apiKey;
+    const sanitized = apiKey?.trim();
+    if (!sanitized) {
+      this.apiKey = null;
+      this.client = null;
+      console.warn("[LLMHelper] Gemini API key cleared. Gemini client disabled.");
+      return;
+    }
+
+    this.apiKey = sanitized;
     this.client = new GoogleGenAI({
-      apiKey: apiKey,
+      apiKey: sanitized,
       httpOptions: { apiVersion: "v1alpha" }
     })
     console.log("[LLMHelper] Gemini API Key updated.");
   }
 
   public setGroqApiKey(apiKey: string) {
-    this.groqClient = new Groq({ apiKey });
+    const sanitized = apiKey?.trim();
+    this.groqApiKey = sanitized || null;
+    if (!sanitized) {
+      this.groqClient = null;
+      console.warn("[LLMHelper] Groq API key cleared. Groq client disabled.");
+      return;
+    }
+
+    this.groqClient = new Groq({ apiKey: sanitized });
     console.log("[LLMHelper] Groq API Key updated.");
   }
 
   public setOpenaiApiKey(apiKey: string) {
-    this.openaiApiKey = apiKey;
-    this.openaiClient = new OpenAI({ apiKey });
+    const sanitized = apiKey?.trim();
+    this.openaiApiKey = sanitized || null;
+    if (!sanitized) {
+      this.openaiClient = null;
+      console.warn("[LLMHelper] OpenAI API key cleared. OpenAI client disabled.");
+      return;
+    }
+
+    this.openaiClient = new OpenAI({ apiKey: sanitized });
     console.log("[LLMHelper] OpenAI API Key updated.");
   }
 
   public setClaudeApiKey(apiKey: string) {
-    this.claudeApiKey = apiKey;
-    this.claudeClient = new Anthropic({ apiKey });
+    const sanitized = apiKey?.trim();
+    this.claudeApiKey = sanitized || null;
+    if (!sanitized) {
+      this.claudeClient = null;
+      console.warn("[LLMHelper] Claude API key cleared. Claude client disabled.");
+      return;
+    }
+
+    this.claudeClient = new Anthropic({ apiKey: sanitized });
     console.log("[LLMHelper] Claude API Key updated.");
   }
 
@@ -1031,7 +1061,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
   /**
    * Generate content using only reasoning-capable models.
-   * Priority: OpenAI → Claude → Gemini Pro → Groq (last resort).
+   * Priority: Groq → OpenAI → Gemini Pro → Gemini Flash → Claude → Ollama(local).
    * Used for structured JSON output tasks (resume/JD/company research).
    * NOTE: Does NOT mutate this.geminiModel — calls Gemini Pro directly to avoid race conditions.
    */
@@ -1039,16 +1069,17 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     type ProviderAttempt = { name: string; execute: () => Promise<string> };
     const providers: ProviderAttempt[] = [];
 
-    // Priority 1: OpenAI
+    // Priority 1: Groq (user-preferred fast default)
+    if (this.groqClient) {
+      providers.push({ name: `Groq (${GROQ_MODEL})`, execute: () => this.generateWithGroq(message, GROQ_MODEL) });
+    }
+
+    // Priority 2: OpenAI
     if (this.openaiClient) {
       providers.push({ name: `OpenAI (${OPENAI_MODEL})`, execute: () => this.generateWithOpenai(message) });
     }
 
-    // Priority 2: Gemini Pro (don't mutate this.geminiModel to avoid race conditions)
-    // NOTE: Claude is intentionally de-prioritised here — messages.create (non-streaming) is
-    // rejected by Anthropic for large payloads ("Streaming is required for operations that may
-    // take longer than 10 minutes"), causing a wasted round-trip before the Gemini fallback.
-    // Claude remains available as a last resort after Gemini Flash.
+    // Priority 3: Gemini Pro (don't mutate this.geminiModel to avoid race conditions)
     if (this.client) {
       providers.push({
         name: `Gemini Pro (${GEMINI_PRO_MODEL})`,
@@ -1071,7 +1102,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         }
       });
 
-      // Priority 3b: Gemini Flash fallback (if Pro model is unavailable or fails)
+      // Priority 4: Gemini Flash fallback (if Pro model is unavailable or fails)
       providers.push({
         name: `Gemini Flash (${GEMINI_FLASH_MODEL})`,
         execute: async () => {
@@ -1093,17 +1124,12 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       });
     }
 
-    // Priority 4: Claude (last resort before Groq — non-streaming, fails on large payloads)
+    // Priority 5: Claude
     if (this.claudeClient) {
       providers.push({ name: `Claude (${CLAUDE_MODEL})`, execute: () => this.generateWithClaude(message) });
     }
 
-    // Priority 5: Groq (Fallback despite JSON hallucination risks)
-    if (this.groqClient) {
-      providers.push({ name: `Groq (${GROQ_MODEL}) fallback`, execute: () => this.generateWithGroq(message, GROQ_MODEL) });
-    }
-
-    // Priority 6: Ollama (on-device fallback — last resort, no cloud dependency)
+    // Priority 6: Ollama (on-device fallback — always last)
     if (this.useOllama && await this.checkOllamaAvailable()) {
       providers.push({
         name: `Ollama (${this.ollamaModel})`,

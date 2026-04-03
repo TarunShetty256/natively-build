@@ -17,6 +17,29 @@ export function initializeIpcHandlers(appState: AppState): void {
     ipcMain.handle(channel, listener);
   };
 
+  const refreshEmbeddingProviders = () => {
+    try {
+      const ragManager = appState.getRAGManager();
+      if (!ragManager) return;
+
+      const { CredentialsManager } = require('./services/CredentialsManager');
+      const cm = CredentialsManager.getInstance();
+
+      ragManager.initializeEmbeddings({
+        openaiKey: cm.getOpenaiApiKey() || process.env.OPENAI_API_KEY || undefined,
+        geminiKey: cm.getGeminiApiKey() || process.env.GOOGLE_API_KEY || process.env.GEMINI_API_KEY || undefined,
+        ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434'
+      });
+
+      // Kick the queue in case items were waiting on a previously failing provider.
+      ragManager.retryPendingEmbeddings().catch((err: Error) => {
+        console.warn('[IPC] Failed to retry pending embeddings after provider refresh:', err.message);
+      });
+    } catch (err: any) {
+      console.warn('[IPC] Failed to refresh embedding providers:', err?.message || err);
+    }
+  };
+
   // --- NEW Test Helper ---
   safeHandle("test-release-fetch", async () => {
     try {
@@ -697,6 +720,9 @@ export function initializeIpcHandlers(appState: AppState): void {
       // Re-init IntelligenceManager
       appState.getIntelligenceManager().initializeLLMs();
 
+      // Re-resolve embedding providers so key rotation/removal takes effect immediately.
+      refreshEmbeddingProviders();
+
       return { success: true };
     } catch (error: any) {
       console.error("Error saving Gemini API key:", error);
@@ -738,6 +764,9 @@ export function initializeIpcHandlers(appState: AppState): void {
       appState.getIntelligenceManager().resetEngine();
       // Re-init IntelligenceManager
       appState.getIntelligenceManager().initializeLLMs();
+
+      // Re-resolve embedding providers so key rotation/removal takes effect immediately.
+      refreshEmbeddingProviders();
 
       return { success: true };
     } catch (error: any) {
@@ -1468,7 +1497,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       return { model: cm.getDefaultModel() };
     } catch (error: any) {
       console.error("Error getting default model:", error);
-      return { model: 'gemini-3.1-flash-lite-preview' };
+      return { model: 'llama-3.3-70b-versatile' };
     }
   });
 
