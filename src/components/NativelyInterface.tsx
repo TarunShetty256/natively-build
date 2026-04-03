@@ -146,6 +146,28 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         return null;
     };
 
+    // Prevent repeated words when STT final segments overlap (common in streaming providers).
+    const stripLeadingOverlap = (previousSegment: string | undefined, incomingSegment: string): string => {
+        const prev = (previousSegment || '').trim();
+        const next = incomingSegment.trim();
+        if (!prev || !next) return next;
+
+        const prevWords = prev.toLowerCase().split(/\s+/);
+        const nextWords = next.split(/\s+/);
+        const nextWordsLower = next.toLowerCase().split(/\s+/);
+        const maxOverlap = Math.min(prevWords.length, nextWordsLower.length, 12);
+
+        for (let size = maxOverlap; size >= 1; size--) {
+            const prevTail = prevWords.slice(-size).join(' ');
+            const nextHead = nextWordsLower.slice(0, size).join(' ');
+            if (prevTail === nextHead) {
+                return nextWords.slice(size).join(' ').trim();
+            }
+        }
+
+        return next;
+    };
+
     useEffect(() => {
         // Load persisted mode
         window.electronAPI?.getActionButtonMode?.()?.then((mode: 'recap' | 'brainstorm') => {
@@ -456,8 +478,11 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 }
 
                 const finalized = rollingFinalSegmentsRef.current;
-                if (finalized[finalized.length - 1]?.toLowerCase() !== signature) {
-                    finalized.push(normalizedText);
+                const previousFinal = finalized[finalized.length - 1];
+                const deltaText = stripLeadingOverlap(previousFinal, normalizedText);
+
+                if (deltaText && deltaText.toLowerCase() !== previousFinal?.toLowerCase()) {
+                    finalized.push(deltaText);
                 }
 
                 rollingInterimRef.current = '';
