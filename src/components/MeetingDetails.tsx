@@ -85,6 +85,18 @@ const getOverviewWithFallback = (meeting: Meeting): string => {
         lines.push(...actionItems.map((item) => `- ${item}`));
     }
 
+    if (lines.length === 0 && (meeting.transcript?.length || 0) > 0) {
+        const transcriptPreview = meeting.transcript
+            ?.map((entry) => (entry.text || '').replace(/\s+/g, ' ').trim())
+            .filter(Boolean)
+            .slice(0, 2)
+            .join(' ')
+            .slice(0, 320)
+            .trim();
+
+        if (transcriptPreview) return transcriptPreview;
+    }
+
     return lines.join('\n');
 };
 
