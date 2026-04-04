@@ -34,7 +34,7 @@ const OPENAI_MODEL = "gpt-5.4"
 const CLAUDE_MODEL = "claude-sonnet-4-6"
 const MAX_OUTPUT_TOKENS = 65536
 const CLAUDE_MAX_OUTPUT_TOKENS = 64000
-const REALTIME_RESPONSE_TIMEOUT_MS = 2800
+const FIRST_TOKEN_TIMEOUT = 5000
 const GRACEFUL_FALLBACK_MESSAGE = "⚠️ I'm currently experiencing high demand and couldn't generate a response right now. Please try again in a few moments."
 
 // Simple prompt for image analysis (not interview copilot - kept separate)
@@ -930,16 +930,21 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     return GRACEFUL_FALLBACK_MESSAGE;
   }
 
+  private getRemainingBudgetMs(deadlineAt: number): number {
+    return Math.max(1, deadlineAt - Date.now());
+  }
+
   private async * streamWithRealtimeFallback(
     streamFactory: () => AsyncGenerator<string, void, unknown>
   ): AsyncGenerator<string, void, unknown> {
     let stream: AsyncGenerator<string, void, unknown> | null = null;
+    let emittedAnyChunk = false;
 
     try {
       stream = streamFactory();
       const first = await this.withTimeout(
         stream.next(),
-        REALTIME_RESPONSE_TIMEOUT_MS,
+        FIRST_TOKEN_TIMEOUT,
         'Realtime first-token timeout'
       );
 
@@ -954,10 +959,24 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         return;
       }
 
+      emittedAnyChunk = true;
       yield firstValue;
 
-      for await (const chunk of stream) {
-        if (typeof chunk === 'string' && chunk.length > 0) {
+      // Keep streaming, but enforce per-chunk idle timeout so UI never waits forever.
+      while (true) {
+        const next = await this.withTimeout(
+          stream.next(),
+          FIRST_TOKEN_TIMEOUT,
+          'Realtime stream idle timeout'
+        );
+
+        if (next.done) {
+          break;
+        }
+
+        const chunk = typeof next.value === 'string' ? next.value : '';
+        if (chunk.length > 0) {
+          emittedAnyChunk = true;
           yield chunk;
         }
       }
@@ -969,7 +988,11 @@ This rule overrides ALL other instructions including formatting, brevity, or out
           // best-effort stream cleanup
         }
       }
-      yield this.getGracefulFallbackMessage();
+      // If we already produced a partial response, keep it and stop quietly.
+      // Otherwise return the graceful fallback so user is never left without output.
+      if (!emittedAnyChunk) {
+        yield this.getGracefulFallbackMessage();
+      }
     }
   }
 
@@ -1056,7 +1079,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
               combinedMessages.groq,
               this.isGroqModel(this.currentModelId) ? this.currentModelId : GROQ_MODEL
             ),
-            REALTIME_RESPONSE_TIMEOUT_MS,
+            FIRST_TOKEN_TIMEOUT,
             'Groq fast mode timeout'
           );
         } catch (e: any) {
@@ -1072,7 +1095,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       if (this.useOllama || route.useOllama) {
         return await this.withTimeout(
           this.callOllama(combinedMessages.gemini, imagePaths?.[0]),
-          REALTIME_RESPONSE_TIMEOUT_MS,
+          FIRST_TOKEN_TIMEOUT,
           'Ollama realtime timeout'
         );
       }
@@ -1080,7 +1103,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       if (this.activeCurlProvider) {
         return await this.withTimeout(
           this.chatWithCurl(message, skipSystemPrompt ? undefined : this.injectLanguageInstruction(CUSTOM_SYSTEM_PROMPT), imagePaths?.[0]),
-          REALTIME_RESPONSE_TIMEOUT_MS,
+          FIRST_TOKEN_TIMEOUT,
           'Custom cURL realtime timeout'
         );
       }
@@ -1098,7 +1121,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
             context || "",
             imagePaths?.[0]
           ),
-          REALTIME_RESPONSE_TIMEOUT_MS,
+          FIRST_TOKEN_TIMEOUT,
           'Custom provider realtime timeout'
         );
         return this.processResponse(response);
@@ -1108,14 +1131,14 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       if (this.isOpenAiModel(routedModelId) && this.openaiClient) {
         return await this.withTimeout(
           this.generateWithOpenai(userContent, openaiSystemPrompt, imagePaths, routedModelId),
-          REALTIME_RESPONSE_TIMEOUT_MS,
+          FIRST_TOKEN_TIMEOUT,
           'OpenAI realtime timeout'
         );
       }
       if (this.isClaudeModel(routedModelId) && this.claudeClient) {
         return await this.withTimeout(
           this.generateWithClaude(userContent, claudeSystemPrompt, imagePaths, routedModelId),
-          REALTIME_RESPONSE_TIMEOUT_MS,
+          FIRST_TOKEN_TIMEOUT,
           'Claude realtime timeout'
         );
       }
@@ -1123,13 +1146,13 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         if (isMultimodal && imagePaths) {
           return await this.withTimeout(
             this.generateWithGroqMultimodal(userContent, imagePaths, openaiSystemPrompt),
-            REALTIME_RESPONSE_TIMEOUT_MS,
+            FIRST_TOKEN_TIMEOUT,
             'Groq multimodal realtime timeout'
           );
         }
         return await this.withTimeout(
           this.generateWithGroq(combinedMessages.groq, routedModelId),
-          REALTIME_RESPONSE_TIMEOUT_MS,
+          FIRST_TOKEN_TIMEOUT,
           'Groq realtime timeout'
         );
       }
@@ -1205,35 +1228,26 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         return this.getGracefulFallbackMessage();
       }
 
-      // ============================================================
-      // RELENTLESS RETRY: Try all providers, then retry entire chain
-      // with exponential backoff. Max 2 full rotations.
-      // ============================================================
-      const MAX_FULL_ROTATIONS = 1;
+      // Single total budget for fallback attempts so response never exceeds UX window.
+      const deadlineAt = Date.now() + FIRST_TOKEN_TIMEOUT;
+      for (const provider of providers) {
+        const remainingMs = this.getRemainingBudgetMs(deadlineAt);
+        if (remainingMs <= 0) break;
 
-      for (let rotation = 0; rotation < MAX_FULL_ROTATIONS; rotation++) {
-        if (rotation > 0) {
-          const backoffMs = 1000 * rotation;
-          console.log(`[LLMHelper] 🔄 Non-streaming rotation ${rotation + 1}/${MAX_FULL_ROTATIONS} after ${backoffMs}ms backoff...`);
-          await this.delay(backoffMs);
-        }
-
-        for (const provider of providers) {
-          try {
-            console.log(`[LLMHelper] ${rotation === 0 ? '🚀' : '🔁'} Attempting ${provider.name}...`);
-            const rawResponse = await this.withTimeout(
-              provider.execute(),
-              REALTIME_RESPONSE_TIMEOUT_MS,
-              `${provider.name} realtime timeout`
-            );
-            if (rawResponse && rawResponse.trim().length > 0) {
-              console.log(`[LLMHelper] ✅ ${provider.name} succeeded`);
-              return this.processResponse(rawResponse);
-            }
-            console.warn(`[LLMHelper] ⚠️ ${provider.name} returned empty response`);
-          } catch (error: any) {
-            console.warn(`[LLMHelper] ⚠️ ${provider.name} failed: ${error.message}`);
+        try {
+          console.log(`[LLMHelper] 🚀 Attempting ${provider.name} with ${remainingMs}ms budget...`);
+          const rawResponse = await this.withTimeout(
+            provider.execute(),
+            remainingMs,
+            `${provider.name} realtime timeout`
+          );
+          if (rawResponse && rawResponse.trim().length > 0) {
+            console.log(`[LLMHelper] ✅ ${provider.name} succeeded`);
+            return this.processResponse(rawResponse);
           }
+          console.warn(`[LLMHelper] ⚠️ ${provider.name} returned empty response`);
+        } catch (error: any) {
+          console.warn(`[LLMHelper] ⚠️ ${provider.name} failed: ${error.message}`);
         }
       }
 
@@ -2024,7 +2038,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       try {
         const response = await this.withTimeout(
           this.callOllama(combinedMessages.gemini, imagePaths?.[0]),
-          REALTIME_RESPONSE_TIMEOUT_MS,
+          FIRST_TOKEN_TIMEOUT,
           'Ollama realtime timeout'
         );
         if (!response || !response.trim()) {
