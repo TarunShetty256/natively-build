@@ -423,6 +423,7 @@ export class IntelligenceEngine extends EventEmitter {
             // to properly terminate the network request when a new generation starts.
             const stream = this.whatToAnswerLLM.generateStream({
                 latestQuestion: resolvedQuestion || 'Please repeat the interviewer question clearly.',
+                transcriptWindow: questionWindow,
                 intentResult,
                 lastAnswer: runtimeState.lastAnswer,
                 previousQuestion: runtimeState.lastQuestion,

@@ -46,12 +46,95 @@ export class WhatToAnswerLLM {
 
             let contextParts: string[] = [];
 
+            const transcriptSummary = (request.transcriptWindow || '').trim();
+            const resume = (request.resume || '').trim();
+            const personaEnabled = !!request.personaEnabled;
+
+            // Build RECENT MESSAGES block (short-term memory first)
+            const recentMessageLines: string[] = [];
+            const recentPairsForMessages = (request.recentQAPairs || []).slice(-4);
+            for (const pair of recentPairsForMessages) {
+                const q = (pair.question || '').trim();
+                const a = (pair.answer || '').trim();
+                if (!q || !a) continue;
+                recentMessageLines.push(`INTERVIEWER: ${q}`);
+                recentMessageLines.push(`CANDIDATE: ${a}`);
+            }
+            if (latestQuestion) {
+                recentMessageLines.push(`INTERVIEWER (LATEST): ${latestQuestion}`);
+            }
+
+            // Build KEY FACTS block (structured candidate data)
+            let keyFactsBlock = '';
+            if (personaEnabled && resume) {
+                try {
+                    const parsed = JSON.parse(resume);
+                    const identity = parsed?.identity ? JSON.stringify(parsed.identity) : '';
+                    const skills = Array.isArray(parsed?.skills) ? parsed.skills.slice(0, 12).join(', ') : '';
+                    const projects = Array.isArray(parsed?.projects)
+                        ? parsed.projects.slice(0, 4).map((p: any) => JSON.stringify(p)).join('\n')
+                        : '';
+                    const experience = Array.isArray(parsed?.experience)
+                        ? parsed.experience.slice(0, 5).map((e: any) => JSON.stringify(e)).join('\n')
+                        : '';
+
+                    const keyFactParts = [
+                        identity ? `Identity: ${identity}` : '',
+                        skills ? `Skills: ${skills}` : '',
+                        experience ? `Experience:\n${experience}` : '',
+                        projects ? `Projects:\n${projects}` : '',
+                    ].filter(Boolean);
+
+                    keyFactsBlock = keyFactParts.join('\n\n');
+                } catch {
+                    keyFactsBlock = resume;
+                }
+            }
+
+            contextParts.push(`<assistant_operating_mode>
+You are an AI interview assistant helping a candidate answer questions in real-time.
+
+Use context in this priority order:
+1) RECENT MESSAGES (short-term memory)
+2) SUMMARY (long-term compressed memory)
+3) KEY FACTS (candidate profile: skills, projects, experience)
+
+Do not ask for context already available in SUMMARY or KEY FACTS.
+Never request full conversation history.
+Never repeat information unnecessarily.
+</assistant_operating_mode>`);
+
+            if (transcriptSummary) {
+                contextParts.push(`<summary>
+${transcriptSummary.slice(0, 4000)}
+</summary>`);
+            }
+
+            if (keyFactsBlock) {
+                contextParts.push(`<key_facts>
+${keyFactsBlock.slice(0, 5000)}
+</key_facts>`);
+            }
+
+            if (recentMessageLines.length > 0) {
+                contextParts.push(`<recent_messages>
+${recentMessageLines.join('\n').slice(0, 5000)}
+</recent_messages>`);
+            }
+
             contextParts.push(`<focus_question>
 LATEST INTERVIEWER QUESTION: ${latestQuestion}
 </focus_question>`);
             contextParts.push(`<critical_rules>
 Answer ONLY the latest interviewer question above.
 Avoid repeating your immediately previous answer wording.
+Never return a generic answer.
+Every answer must include at least one concrete anchor from available context:
+- a real project example, or
+- a specific technology used, or
+- a real scenario from the candidate's experience.
+
+If the question is about skills, strengths, or challenges, tie it directly to a concrete project from KEY FACTS.
 </critical_rules>`);
             contextParts.push(`<interview_style>
 You are a high-performing candidate interviewing at a top tech company.
@@ -61,18 +144,34 @@ Keep the answer to 2-3 sentences maximum.
 
 Start with a direct answer.
 Include one real example, project, or experience.
+Include at least one concrete technology/tool/framework when relevant.
 Mention measurable impact when possible (performance, scale, or outcomes).
 Show practical understanding, not theory.
 
+Prefer a clear mini-structure: "First..., then..." or 2 concise points.
+
 Strictly avoid textbook definitions, generic answers, "it depends", over-explaining, and repeated structure.
 If the question is similar to before, use a different structure and different example than your previous answer.
+
+Do not use vague self-descriptions like:
+- "I am passionate"
+- "I am hardworking"
+- "I like challenges"
 
 If your answer sounds generic, rewrite it with a concrete example before responding.
 If persona is enabled, strongly prioritize using the candidate's real experience.
 If the question is unclear, ask exactly one short clarification question instead of guessing.
 Output only the spoken answer in natural English.
-No bullet points.
+Keep it concise and interview-ready.
 </interview_style>`);
+
+            contextParts.push(`<final_self_check>
+Before finalizing, verify:
+1) The answer directly addresses the latest question.
+2) The answer includes at least one concrete anchor (project/technology/scenario).
+3) The answer is specific, concise, and non-generic.
+If any check fails, rewrite once and output only the improved final answer.
+</final_self_check>`);
 
             const previousQuestion = (request.previousQuestion || '').trim();
             const previousAnswer = (request.previousAnswer || '').trim();
@@ -145,8 +244,6 @@ LAST ANSWER (do not repeat verbatim): ${clipped}
             const fullMessage = extraContext;
 
             let prompt = UNIVERSAL_WHAT_TO_ANSWER_PROMPT;
-            const resume = (request.resume || '').trim();
-            const personaEnabled = !!request.personaEnabled;
             if (resume && personaEnabled) {
                 prompt += `\nUse this experience if relevant:\n${resume}`;
             }

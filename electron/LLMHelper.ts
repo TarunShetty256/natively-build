@@ -1505,7 +1505,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     } catch (error: any) {
       console.error("[LLMHelper] cURL Execution Error:", error.message);
-      return `Error: ${error.message}`;
+      return this.getGracefulFallbackMessage();
     }
   }
 
@@ -2646,7 +2646,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
     } catch (e) {
       console.error("Ollama streaming failed", e);
-      yield "Error: Failed to stream from Ollama.";
+      yield this.getGracefulFallbackMessage();
     }
   }
 
@@ -2711,7 +2711,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       if (!response.ok) {
         const errorText = await response.text();
         console.error(`Custom Provider HTTP ${response.status}: ${errorText.substring(0, 200)}`);
-        yield `Error: Custom Provider returned HTTP ${response.status}`;
+        yield this.getGracefulFallbackMessage();
         return;
       }
 
@@ -2760,7 +2760,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     } catch (e) {
       console.error("Custom streaming failed", e);
-      yield "Error streaming from custom provider.";
+      yield this.getGracefulFallbackMessage();
     }
   }
 
