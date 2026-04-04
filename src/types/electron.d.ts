@@ -150,7 +150,7 @@ export interface ElectronAPI {
   // Intelligence Mode Events
   onIntelligenceAssistUpdate: (callback: (data: { insight: string }) => void) => () => void
   onIntelligenceSuggestedAnswerToken: (callback: (data: { token: string; question: string; confidence: number }) => void) => () => void
-  onIntelligenceSuggestedAnswer: (callback: (data: { answer: string; question: string; confidence: number }) => void) => () => void
+  onIntelligenceSuggestedAnswer: (callback: (data: { answer: string; question: string; confidence: number; confidenceLevel?: 'high' | 'medium' | 'low' }) => void) => () => void
   onIntelligenceRefinedAnswerToken: (callback: (data: { token: string; intent: string }) => void) => () => void
   onIntelligenceRefinedAnswer: (callback: (data: { answer: string; intent: string }) => void) => () => void
   onIntelligenceFollowUpQuestionsUpdate: (callback: (data: { questions: string }) => void) => () => void

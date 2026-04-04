@@ -1419,10 +1419,10 @@ export class AppState {
       helper.getOverlayWindow()?.webContents.send('intelligence-assist-update', { insight });
     })
 
-    this.intelligenceManager.on('suggested_answer', (answer: string, question: string, confidence: number) => {
+    this.intelligenceManager.on('suggested_answer', (answer: string, question: string, confidence: number, confidenceLevel?: 'high' | 'medium' | 'low') => {
       const win = mainWindow()
       if (win) {
-        win.webContents.send('intelligence-suggested-answer', { answer, question, confidence })
+        win.webContents.send('intelligence-suggested-answer', { answer, question, confidence, confidenceLevel })
       }
 
     })

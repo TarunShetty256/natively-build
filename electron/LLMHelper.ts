@@ -251,6 +251,112 @@ export class LLMHelper {
 
   private currentModelId: string = GEMINI_FLASH_MODEL;
 
+  private extractRoutingQuestion(rawMessage: string, context?: string): string {
+    const focusQuestionMatch = rawMessage.match(/LATEST INTERVIEWER QUESTION:\s*([^\n<]+)/i);
+    if (focusQuestionMatch?.[1]) {
+      return focusQuestionMatch[1].trim();
+    }
+
+    const userQuestionMatch = rawMessage.match(/USER QUESTION:\s*([\s\S]+)/i);
+    if (userQuestionMatch?.[1]) {
+      return userQuestionMatch[1].split('\n')[0].trim();
+    }
+
+    if (context) {
+      const contextQuestionMatch = context.match(/(?:^|\n)([^\n?]{0,220}\?)/);
+      if (contextQuestionMatch?.[1]) {
+        return contextQuestionMatch[1].trim();
+      }
+    }
+
+    return (rawMessage || '').split('\n')[0].trim();
+  }
+
+  private classifyQuestionComplexity(question: string): 'simple' | 'medium' | 'complex' {
+    const q = (question || '').toLowerCase().trim();
+    if (!q) return 'medium';
+
+    const complexPattern = /\b(system design|scalability|scale|architecture|distributed|microservices|load balancing|high availability|fault tolerance|trade[- ]?off|throughput|latency|partitioning|sharding|eventual consistency)\b/;
+    if (complexPattern.test(q)) {
+      return 'complex';
+    }
+
+    const simplePattern = /\b(what is|what's|define|definition|explain briefly|briefly explain|in short|quickly explain)\b/;
+    if (simplePattern.test(q)) {
+      return 'simple';
+    }
+
+    return 'medium';
+  }
+
+  private isModelCallable(modelId: string, isMultimodal: boolean): boolean {
+    if (this.isOpenAiModel(modelId)) return !!this.openaiClient;
+    if (this.isClaudeModel(modelId)) return !!this.claudeClient;
+    if (this.isGroqModel(modelId)) {
+      // Groq supports text + multimodal via Llama 4 Scout in this codebase.
+      return !!this.groqClient;
+    }
+    if (this.isGeminiModel(modelId)) return !!this.client;
+    return false;
+  }
+
+  private getTieredModelSafely(family: TextModelFamily, fallbackModel: string): string {
+    try {
+      return this.modelVersionManager.getTextTieredModels(family).tier1 || fallbackModel;
+    } catch {
+      return fallbackModel;
+    }
+  }
+
+  private async resolveRoutedModel(
+    rawMessage: string,
+    context: string | undefined,
+    isMultimodal: boolean
+  ): Promise<{ tier: 'simple' | 'medium' | 'complex'; modelId: string | null; useOllama: boolean }> {
+    const question = this.extractRoutingQuestion(rawMessage, context);
+    const tier = this.classifyQuestionComplexity(question);
+
+    const defaultModel = this.currentModelId;
+    const fastGroq = this.getTieredModelSafely(TextModelFamily.GROQ, GROQ_MODEL);
+    const fastGemini = this.getTieredModelSafely(TextModelFamily.GEMINI_FLASH, GEMINI_FLASH_MODEL);
+    const strongOpenAI = this.getTieredModelSafely(TextModelFamily.OPENAI, OPENAI_MODEL);
+    const strongClaude = this.getTieredModelSafely(TextModelFamily.CLAUDE, CLAUDE_MODEL);
+    const strongGemini = this.getTieredModelSafely(TextModelFamily.GEMINI_PRO, GEMINI_PRO_MODEL);
+
+    const simpleCandidates = isMultimodal
+      ? [fastGemini, defaultModel, strongOpenAI, strongClaude, strongGemini]
+      : [fastGroq, fastGemini, defaultModel, strongOpenAI, strongClaude, strongGemini];
+    const mediumCandidates = [defaultModel, fastGemini, fastGroq, strongOpenAI, strongClaude, strongGemini];
+    const complexCandidates = [strongOpenAI, strongClaude, strongGemini, defaultModel, fastGemini, fastGroq];
+
+    const candidates = tier === 'simple'
+      ? simpleCandidates
+      : tier === 'complex'
+        ? complexCandidates
+        : mediumCandidates;
+
+    for (const candidate of candidates) {
+      if (this.isModelCallable(candidate, isMultimodal)) {
+        return { tier, modelId: candidate, useOllama: false };
+      }
+    }
+
+    // If cloud providers are unavailable (e.g., missing API keys), fall back to Ollama.
+    if (this.useOllama) {
+      return { tier, modelId: null, useOllama: true };
+    }
+
+    const availableOllamaModels = await this.getOllamaModels();
+    if (availableOllamaModels.length > 0) {
+      if (!availableOllamaModels.includes(this.ollamaModel)) {
+        this.ollamaModel = availableOllamaModels[0];
+      }
+      return { tier, modelId: null, useOllama: true };
+    }
+
+    return { tier, modelId: defaultModel, useOllama: false };
+  }
+
   public setModel(modelId: string, customProviders: (CustomProvider | CurlProvider)[] = []) {
     // Map UI short codes to internal Model IDs
     let targetModelId = modelId;
@@ -888,6 +994,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         groq: buildMessage(finalGroqPrompt),
       };
 
+      const route = await this.resolveRoutedModel(message, context, isMultimodal);
+      const routedModelId = route.modelId || this.currentModelId;
+      console.log(`[LLMHelper] Dynamic route (non-stream): tier=${route.tier}, target=${route.useOllama ? `ollama:${this.ollamaModel}` : routedModelId}`);
+
       // GROQ FAST TEXT OVERRIDE (Text-Only)
       if (this.groqFastTextMode && !isMultimodal && this.groqClient) {
         console.log(`[LLMHelper] ⚡️ Groq Fast Text Mode Active. Routing to Groq...`);
@@ -906,7 +1016,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       const openaiSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(OPENAI_SYSTEM_PROMPT);
       const claudeSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(CLAUDE_SYSTEM_PROMPT);
 
-      if (this.useOllama) {
+      if (this.useOllama || route.useOllama) {
         return await this.callOllama(combinedMessages.gemini, imagePaths?.[0]);
       }
 
@@ -930,17 +1040,17 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
 
       // --- Direct Routing based on Selected Model ---
-      if (this.isOpenAiModel(this.currentModelId) && this.openaiClient) {
-        return await this.generateWithOpenai(userContent, openaiSystemPrompt, imagePaths);
+      if (this.isOpenAiModel(routedModelId) && this.openaiClient) {
+        return await this.generateWithOpenai(userContent, openaiSystemPrompt, imagePaths, routedModelId);
       }
-      if (this.isClaudeModel(this.currentModelId) && this.claudeClient) {
-        return await this.generateWithClaude(userContent, claudeSystemPrompt, imagePaths);
+      if (this.isClaudeModel(routedModelId) && this.claudeClient) {
+        return await this.generateWithClaude(userContent, claudeSystemPrompt, imagePaths, routedModelId);
       }
-      if (this.isGroqModel(this.currentModelId) && this.groqClient) {
+      if (this.isGroqModel(routedModelId) && this.groqClient) {
         if (isMultimodal && imagePaths) {
           return await this.generateWithGroqMultimodal(userContent, imagePaths, openaiSystemPrompt);
         }
-        return await this.generateWithGroq(combinedMessages.groq, this.currentModelId);
+        return await this.generateWithGroq(combinedMessages.groq, routedModelId);
       }
 
       // Fallback (Gemini) - logic handled below by SMART DYNAMIC FALLBACK list
@@ -2009,6 +2119,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       ? `CONTEXT:\n${context}\n\nUSER QUESTION:\n${message}`
       : message;
 
+    const route = await this.resolveRoutedModel(message, context, isMultimodal);
+    const routedModelId = route.modelId || this.currentModelId;
+    console.log(`[LLMHelper] Dynamic route (stream): tier=${route.tier}, target=${route.useOllama ? `ollama:${this.ollamaModel}` : routedModelId}`);
+
     // GROQ FAST TEXT OVERRIDE (Text-Only)
     if (this.groqFastTextMode && !isMultimodal && this.groqClient) {
       console.log(`[LLMHelper] ⚡️ Groq Fast Text Mode Active (Streaming). Routing to Groq...`);
@@ -2028,22 +2142,20 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     }
 
     // 1. Ollama Streaming
-    if (this.useOllama) {
+    if (this.useOllama || route.useOllama) {
       yield* this.streamWithOllama(message, context, finalSystemPrompt, imagePaths);
       return;
     }
 
-    // 2. Custom Provider Streaming (via cURL - Non-streaming fallback for now)
+    // 2. Custom Provider Streaming (active cURL provider)
     if (this.activeCurlProvider) {
-      const response = await this.executeCustomProvider(
-        this.activeCurlProvider.curlCommand,
-        userContent,
-        finalSystemPrompt,
+      yield* this.streamWithCustom(
         message,
-        context || "",
-        imagePaths?.[0]
+        context,
+        imagePaths,
+        finalSystemPrompt,
+        this.activeCurlProvider.curlCommand
       );
-      yield response;
       return;
     }
 
@@ -2056,31 +2168,31 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // 3. Cloud Provider Routing
 
     // OpenAI
-    if (this.isOpenAiModel(this.currentModelId) && this.openaiClient) {
+    if (this.isOpenAiModel(routedModelId) && this.openaiClient) {
       const openAiSystem = systemPromptOverride || OPENAI_SYSTEM_PROMPT;
       const finalOpenAiSystem = this.injectLanguageInstruction(openAiSystem);
       if (isMultimodal && imagePaths) {
-        yield* this.streamWithOpenaiMultimodal(userContent, imagePaths, finalOpenAiSystem);
+        yield* this.streamWithOpenaiMultimodal(userContent, imagePaths, finalOpenAiSystem, routedModelId);
       } else {
-        yield* this.streamWithOpenai(userContent, finalOpenAiSystem);
+        yield* this.streamWithOpenai(userContent, finalOpenAiSystem, routedModelId);
       }
       return;
     }
 
     // Claude
-    if (this.isClaudeModel(this.currentModelId) && this.claudeClient) {
+    if (this.isClaudeModel(routedModelId) && this.claudeClient) {
       const claudeSystem = systemPromptOverride || CLAUDE_SYSTEM_PROMPT;
       const finalClaudeSystem = this.injectLanguageInstruction(claudeSystem);
       if (isMultimodal && imagePaths) {
-        yield* this.streamWithClaudeMultimodal(userContent, imagePaths, finalClaudeSystem);
+        yield* this.streamWithClaudeMultimodal(userContent, imagePaths, finalClaudeSystem, routedModelId);
       } else {
-        yield* this.streamWithClaude(userContent, finalClaudeSystem);
+        yield* this.streamWithClaude(userContent, finalClaudeSystem, routedModelId);
       }
       return;
     }
 
     // Groq (Text + Multimodal)
-    if (this.isGroqModel(this.currentModelId) && this.groqClient) {
+    if (this.isGroqModel(routedModelId) && this.groqClient) {
       if (isMultimodal && imagePaths) {
         // Route multimodal to Groq Llama 4 Scout (vision-capable)
         const groqSystem = systemPromptOverride || OPENAI_SYSTEM_PROMPT;
@@ -2092,20 +2204,20 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       const groqSystem = systemPromptOverride ? baseSystemPrompt : GROQ_SYSTEM_PROMPT;
       const finalGroqSystem = this.injectLanguageInstruction(groqSystem);
       const groqFullMessage = `${finalGroqSystem}\n\n${userContent}`;
-      yield* this.streamWithGroq(groqFullMessage, this.currentModelId);
+      yield* this.streamWithGroq(groqFullMessage, routedModelId);
       return;
     }
 
     // 4. Gemini Routing & Fallback
     if (this.client) {
       // Direct model use if specified
-      if (this.isGeminiModel(this.currentModelId)) {
+      if (this.isGeminiModel(routedModelId)) {
         const fullMsg = `${finalSystemPrompt}\n\n${userContent}`;
-        yield* this.streamWithGeminiModel(fullMsg, this.currentModelId, imagePaths);
+        yield* this.streamWithGeminiModel(fullMsg, routedModelId, imagePaths);
         return;
       }
 
-      // Race strategy (default)
+      // Default Gemini fallback path: real streaming with model fallback (no buffered fake chunking)
       const raceMsg = `${finalSystemPrompt}\n\n${userContent}`;
       yield* this.streamWithGeminiParallelRace(raceMsg, imagePaths);
     } else {
@@ -2364,53 +2476,14 @@ This rule overrides ALL other instructions including formatting, brevity, or out
    */
   private async * streamWithGeminiParallelRace(fullMessage: string, imagePaths?: string[]): AsyncGenerator<string, void, unknown> {
     if (!this.client) throw new Error("Gemini client not initialized");
-
-    // Start both streams
-    const flashPromise = this.collectStreamResponse(fullMessage, GEMINI_FLASH_MODEL, imagePaths);
-    const proPromise = this.collectStreamResponse(fullMessage, GEMINI_PRO_MODEL, imagePaths);
-
-    // Race - whoever finishes first wins
-    const result = await Promise.any([flashPromise, proPromise]);
-
-    // Yield the collected response character by character to simulate streaming
-    // (Or yield in chunks for efficiency)
-    const chunkSize = 10;
-    for (let i = 0; i < result.length; i += chunkSize) {
-      yield result.substring(i, i + chunkSize);
-    }
-  }
-
-  /**
-   * Collect full response from a Gemini model (non-streaming for race)
-   */
-  private async collectStreamResponse(fullMessage: string, model: string, imagePaths?: string[]): Promise<string> {
-    if (!this.client) throw new Error("Gemini client not initialized");
-
-    const contents: any[] = [{ text: fullMessage }];
-    if (imagePaths?.length) {
-      for (const p of imagePaths) {
-        if (fs.existsSync(p)) {
-          const imageData = await fs.promises.readFile(p);
-          contents.push({
-            inlineData: {
-              mimeType: "image/png",
-              data: imageData.toString("base64")
-            }
-          });
-        }
-      }
+    try {
+      yield* this.streamWithGeminiModel(fullMessage, GEMINI_FLASH_MODEL, imagePaths);
+      return;
+    } catch (flashError: any) {
+      console.warn(`[LLMHelper] Gemini Flash stream failed in fallback path: ${flashError?.message || flashError}`);
     }
 
-    const response = await this.client.models.generateContent({
-      model: model,
-      contents: contents,
-      config: {
-        maxOutputTokens: MAX_OUTPUT_TOKENS,
-        temperature: 0.4,
-      }
-    });
-
-    return response.text || "";
+    yield* this.streamWithGeminiModel(fullMessage, GEMINI_PRO_MODEL, imagePaths);
   }
 
   // --- OLLAMA STREAMING ---
@@ -2472,8 +2545,15 @@ This rule overrides ALL other instructions including formatting, brevity, or out
   }
 
   // --- CUSTOM PROVIDER STREAMING ---
-  private async * streamWithCustom(message: string, context?: string, imagePaths?: string[], systemPrompt: string = UNIVERSAL_SYSTEM_PROMPT): AsyncGenerator<string, void, unknown> {
-    if (!this.customProvider) return;
+  private async * streamWithCustom(
+    message: string,
+    context?: string,
+    imagePaths?: string[],
+    systemPrompt: string = UNIVERSAL_SYSTEM_PROMPT,
+    curlCommandOverride?: string
+  ): AsyncGenerator<string, void, unknown> {
+    const effectiveCurl = curlCommandOverride || this.customProvider?.curlCommand;
+    if (!effectiveCurl) return;
     // We reuse the executeCustomProvider logic but we need it to stream.
     // If the user provided a curl command, it might support streaming (SSE) or not.
     // If we execute it via Child Process, we can read stdout stream.
@@ -2483,8 +2563,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // But we can't easily reuse the function since it awaits the whole fetch.
     // So we'll implement a simplified streaming version using our existing variable replacer and node-fetch.
 
-    const curlCommand = this.customProvider.curlCommand;
-    const requestConfig = curl2Json(curlCommand);
+    const requestConfig = curl2Json(effectiveCurl);
 
     let base64Image = "";
     if (imagePaths?.length) {
@@ -2532,16 +2611,19 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
       if (!response.body) return;
 
-      // Collect all chunks to handle both SSE streaming and non-SSE JSON responses
-      let fullBody = "";
+      // Parse incrementally to avoid buffering full responses before emit.
       let yieldedAny = false;
+      let pendingLine = "";
+      const decoder = new TextDecoder();
 
       // @ts-ignore
       for await (const chunk of response.body) {
-        const text = new TextDecoder().decode(chunk);
-        fullBody += text;
+        const text = decoder.decode(chunk, { stream: true });
+        pendingLine += text;
 
-        const lines = text.split('\n');
+        const lines = pendingLine.split('\n');
+        pendingLine = lines.pop() || '';
+
         for (const line of lines) {
           if (line.trim().length === 0) continue;
 
@@ -2553,16 +2635,20 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         }
       }
 
-      // If no SSE content was yielded, try parsing the full body as JSON
-      // This handles non-streaming responses (e.g. Ollama with stream: false)
-      if (!yieldedAny && fullBody.trim().length > 0) {
-        try {
-          const data = JSON.parse(fullBody);
-          const extracted = this.extractFromCommonFormats(data);
-          if (extracted) yield extracted;
-        } catch {
-          // Not JSON, yield raw text if it's not looking like garbage
-          if (fullBody.length < 5000) yield fullBody.trim();
+      const tail = pendingLine + decoder.decode();
+      if (tail.trim().length > 0) {
+        const item = this.parseStreamLine(tail);
+        if (item) {
+          yield item;
+          yieldedAny = true;
+        }
+      }
+
+      // Last resort for plain-text providers that do not use SSE/JSON chunks.
+      if (!yieldedAny && tail.trim().length > 0) {
+        const plain = tail.trim();
+        if (!plain.startsWith('{') && !plain.startsWith('data:')) {
+          yield plain;
         }
       }
 

@@ -15,6 +15,7 @@ import {
 
 // Mode types
 export type IntelligenceMode = 'idle' | 'assist' | 'what_to_say' | 'follow_up' | 'recap' | 'clarify' | 'manual' | 'follow_up_questions' | 'code_hint' | 'brainstorm';
+export type ConfidenceLevel = 'high' | 'medium' | 'low';
 
 // Refinement intent detection (refined to avoid false positives)
 function detectRefinementIntent(userText: string): { isRefinement: boolean; intent: string } {
@@ -95,7 +96,7 @@ function isLikelyAutoFollowUp(currentQuestion: string, previousQuestion: string 
 // Events emitted by IntelligenceEngine
 export interface IntelligenceModeEvents {
     'assist_update': (insight: string) => void;
-    'suggested_answer': (answer: string, question: string, confidence: number) => void;
+    'suggested_answer': (answer: string, question: string, confidence: number, confidenceLevel?: ConfidenceLevel) => void;
     'suggested_answer_token': (token: string, question: string, confidence: number) => void;
     'refined_answer': (answer: string, intent: string) => void;
     'refined_answer_token': (token: string, intent: string) => void;
@@ -320,10 +321,15 @@ export class IntelligenceEngine extends EventEmitter {
                 const manualQuestion = explicitQuestion || this.stateManager.getState().lastQuestion || '';
                 const answer = await this.answerLLM.generate(manualQuestion, context);
                 if (answer) {
+                    const confidenceResult = this.calculateAnswerConfidence(
+                        manualQuestion || 'inferred',
+                        answer,
+                        this.stateManager.getState().lastAnswer
+                    );
                     this.session.addAssistantMessage(answer);
                     this.stateManager.setLastQuestion(manualQuestion || null);
                     this.stateManager.setLastAnswer(answer);
-                    this.emit('suggested_answer', answer, manualQuestion || 'inferred', confidence);
+                    this.emit('suggested_answer', answer, manualQuestion || 'inferred', confidenceResult.score, confidenceResult.level);
                 }
                 this.setMode('idle');
                 return answer || "Could you repeat that? I want to make sure I address your question properly.";
@@ -487,6 +493,12 @@ export class IntelligenceEngine extends EventEmitter {
             this.lastWhatToSayOutput = fullAnswer;
             this.lastWhatToSayTime = Date.now();
 
+            const confidenceResult = this.calculateAnswerConfidence(
+                resolvedQuestion || inferredQuestion,
+                fullAnswer,
+                runtimeState.lastAnswer
+            );
+
             this.session.pushUsage({
                 type: 'assist',
                 timestamp: Date.now(),
@@ -496,7 +508,7 @@ export class IntelligenceEngine extends EventEmitter {
 
             // CQ-05 fix: only emit the "complete" event after a non-aborted stream.
             // The renderer already has all tokens — this is for metadata only (e.g. copying, history).
-            this.emit('suggested_answer', fullAnswer, inferredQuestion, confidence);
+            this.emit('suggested_answer', fullAnswer, inferredQuestion, confidenceResult.score, confidenceResult.level);
 
             this.setMode('idle');
             return fullAnswer;
@@ -903,7 +915,7 @@ export class IntelligenceEngine extends EventEmitter {
                 answer: fullHint
             });
 
-            this.emit('suggested_answer', fullHint, 'Code Hint', 1.0);
+            this.emit('suggested_answer', fullHint, 'Code Hint', 1.0, this.confidenceLevelFromScore(1.0));
             this.setMode('idle');
             return fullHint;
 
@@ -955,7 +967,7 @@ export class IntelligenceEngine extends EventEmitter {
                 this.setMode('idle');
                 const msg = "There's nothing to brainstorm right now. Make sure your question is visible or spoken aloud, then try again.";
                 this.session.addAssistantMessage(msg);
-                this.emit('suggested_answer', msg, 'Brainstorming Approaches', 1.0);
+                this.emit('suggested_answer', msg, 'Brainstorming Approaches', 1.0, this.confidenceLevelFromScore(1.0));
                 return msg;
             }
 
@@ -996,7 +1008,7 @@ export class IntelligenceEngine extends EventEmitter {
                 answer: fullResult
             });
 
-            this.emit('suggested_answer', fullResult, 'Brainstorming Approaches', 1.0);
+            this.emit('suggested_answer', fullResult, 'Brainstorming Approaches', 1.0, this.confidenceLevelFromScore(1.0));
             this.setMode('idle');
             return fullResult;
 
@@ -1043,6 +1055,56 @@ export class IntelligenceEngine extends EventEmitter {
         } catch {
             return candidate;
         }
+    }
+
+    private confidenceLevelFromScore(score: number): ConfidenceLevel {
+        if (score >= 0.8) return 'high';
+        if (score >= 0.5) return 'medium';
+        return 'low';
+    }
+
+    private calculateAnswerConfidence(
+        question: string,
+        answer: string,
+        previousAnswer: string | null
+    ): { level: ConfidenceLevel; score: number } {
+        const a = (answer || '').trim();
+        const wordCount = a.split(/\s+/).filter(Boolean).length;
+
+        const sentenceCount = a
+            .split(/[.!?]+/)
+            .map(part => part.trim())
+            .filter(Boolean)
+            .length;
+
+        const hasRealExample = /\b(project|experience|in my previous role|at my last|i worked on|we built|for example|for instance|i led|i implemented)\b/i.test(a);
+        const hasMeasurableImpact =
+            /\b\d+(?:\.\d+)?(?:%|x|ms|s|sec|seconds|minutes|hours|users|requests|rps|qps|months|years|k|m|million|billion)?\b/i.test(a) ||
+            /\b(scale|scaled|performance|latency|throughput|uptime|availability|reduced|improved|faster|slower)\b/i.test(a);
+        const hasStrongConfidenceLanguage = /\b(definitely|certainly|clearly|absolutely|i can|i will|i led|i delivered|i improved|i reduced)\b/i.test(a);
+        const hasVagueLanguage = /\b(maybe|generally|it depends)\b/i.test(a);
+        const lessThanOneSentence = sentenceCount < 1 || wordCount < 4;
+        const similarToPrevious = !!previousAnswer && this.isAnswerTooSimilar(a, previousAnswer);
+
+        let points = 0;
+        if (hasRealExample) points += 2;
+        if (hasMeasurableImpact) points += 2;
+        if (hasStrongConfidenceLanguage) points += 1;
+        if (hasVagueLanguage) points -= 2;
+        if (lessThanOneSentence) points -= 2;
+        if (similarToPrevious) points -= 1;
+
+        let level: ConfidenceLevel;
+        if (points >= 3) {
+            level = 'high';
+        } else if (points >= 1) {
+            level = 'medium';
+        } else {
+            level = 'low';
+        }
+
+        const score = level === 'high' ? 0.9 : level === 'medium' ? 0.65 : 0.35;
+        return { level, score };
     }
 
     private setMode(mode: IntelligenceMode): void {

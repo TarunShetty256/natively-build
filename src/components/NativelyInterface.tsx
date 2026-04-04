@@ -61,6 +61,7 @@ interface Message {
     screenshotPreview?: string;
     isCode?: boolean;
     intent?: string;
+    confidenceLevel?: 'high' | 'medium' | 'low';
     isNegotiationCoaching?: boolean;
     negotiationCoachingData?: {
         tacticalNote: string;
@@ -79,6 +80,7 @@ interface NativelyInterfaceProps {
 }
 
 const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, overlayOpacity = OVERLAY_OPACITY_DEFAULT }) => {
+    const STREAMING_PLACEHOLDER_TEXT = 'Let me think...';
     const isLightTheme = useResolvedTheme() === 'light';
     const [isExpanded, setIsExpanded] = useState(true);
     const [inputValue, setInputValue] = useState('');
@@ -129,6 +131,8 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const contentRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
+    const pendingScrollFrameRef = useRef<number | null>(null);
+    const messageRowCacheRef = useRef<Map<string, { msgRef: Message; node: React.ReactNode }>>(new Map());
     // const settingsButtonRef = useRef<HTMLButtonElement>(null);
 
     // Latent Context State (Screenshots attached but not sent)
@@ -360,9 +364,21 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     // Auto-scroll
     useEffect(() => {
         if (isExpanded) {
-            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+            if (pendingScrollFrameRef.current !== null) {
+                cancelAnimationFrame(pendingScrollFrameRef.current);
+            }
+            pendingScrollFrameRef.current = requestAnimationFrame(() => {
+                messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+                pendingScrollFrameRef.current = null;
+            });
         }
-    }, [messages, isExpanded, isProcessing]);
+        return () => {
+            if (pendingScrollFrameRef.current !== null) {
+                cancelAnimationFrame(pendingScrollFrameRef.current);
+                pendingScrollFrameRef.current = null;
+            }
+        };
+    }, [messages.length, isExpanded, isProcessing]);
 
     // Build conversation context from messages
     useEffect(() => {
@@ -372,7 +388,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             .slice(-20)
             .join('\n');
         setConversationContext(context);
-    }, [messages]);
+    }, [messages.length, messages[messages.length - 1]?.isStreaming]);
 
     // Listen for settings window visibility changes
     useEffect(() => {
@@ -423,6 +439,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         if (!window.electronAPI?.onSessionReset) return;
         const unsubscribe = window.electronAPI.onSessionReset(() => {
             console.log('[NativelyInterface] Resetting session state...');
+            messageRowCacheRef.current.clear();
             setMessages([]);
             setInputValue('');
             setAttachedContext([]);
@@ -444,6 +461,11 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         });
         return () => unsubscribe();
     }, []);
+
+    // Clear cached rendered rows when visual theme state changes.
+    useEffect(() => {
+        messageRowCacheRef.current.clear();
+    }, [isLightTheme]);
 
 
     const handleScreenshotAttach = (data: { path: string; preview: string }) => {
@@ -590,7 +612,8 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
 
                 // If we already have a streaming message for this intent, append
                 if (lastMsg && lastMsg.isStreaming && lastMsg.intent === 'what_to_answer') {
-                    const nextText = lastMsg.text + data.token;
+                    const baseText = lastMsg.text === STREAMING_PLACEHOLDER_TEXT ? '' : lastMsg.text;
+                    const nextText = baseText + data.token;
                     const coaching = parseNegotiationCoachingPayload(nextText);
                     const updated = [...prev];
                     updated[prev.length - 1] = {
@@ -631,6 +654,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                         ...lastMsg,
                         isStreaming: false,
                         text: '',
+                        confidenceLevel: data.confidenceLevel,
                         isNegotiationCoaching: true,
                         negotiationCoachingData: coaching || lastMsg.negotiationCoachingData
                     };
@@ -645,6 +669,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                         ...lastMsg,
                         text: coaching ? '' : data.answer, // Ensure final consistency
                         isStreaming: false,
+                        confidenceLevel: data.confidenceLevel,
                         isNegotiationCoaching: !!coaching,
                         negotiationCoachingData: coaching || undefined
                     };
@@ -657,6 +682,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                     role: 'system',
                     text: coaching ? '' : data.answer,  // Plain text, no markdown - ready to speak
                     intent: 'what_to_answer',
+                    confidenceLevel: data.confidenceLevel,
                     isNegotiationCoaching: !!coaching,
                     negotiationCoachingData: coaching || undefined
                 }];
@@ -668,10 +694,11 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             setMessages(prev => {
                 const lastMsg = prev[prev.length - 1];
                 if (lastMsg && lastMsg.isStreaming && lastMsg.intent === data.intent) {
+                    const baseText = lastMsg.text === STREAMING_PLACEHOLDER_TEXT ? '' : lastMsg.text;
                     const updated = [...prev];
                     updated[prev.length - 1] = {
                         ...lastMsg,
-                        text: lastMsg.text + data.token
+                        text: baseText + data.token
                     };
                     return updated;
                 }
@@ -713,10 +740,11 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             setMessages(prev => {
                 const lastMsg = prev[prev.length - 1];
                 if (lastMsg && lastMsg.isStreaming && lastMsg.intent === 'recap') {
+                    const baseText = lastMsg.text === STREAMING_PLACEHOLDER_TEXT ? '' : lastMsg.text;
                     const updated = [...prev];
                     updated[prev.length - 1] = {
                         ...lastMsg,
-                        text: lastMsg.text + data.token
+                        text: baseText + data.token
                     };
                     return updated;
                 }
@@ -768,10 +796,11 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             setMessages(prev => {
                 const lastMsg = prev[prev.length - 1];
                 if (lastMsg && lastMsg.isStreaming && lastMsg.intent === 'follow_up_questions') {
+                    const baseText = lastMsg.text === STREAMING_PLACEHOLDER_TEXT ? '' : lastMsg.text;
                     const updated = [...prev];
                     updated[prev.length - 1] = {
                         ...lastMsg,
-                        text: lastMsg.text + data.token
+                        text: baseText + data.token
                     };
                     return updated;
                 }
@@ -847,8 +876,9 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             setMessages(prev => {
                 const lastMsg = prev[prev.length - 1];
                 if (lastMsg && lastMsg.isStreaming && lastMsg.intent === 'clarify') {
+                    const baseText = lastMsg.text === STREAMING_PLACEHOLDER_TEXT ? '' : lastMsg.text;
                     const updated = [...prev];
-                    updated[prev.length - 1] = { ...lastMsg, text: lastMsg.text + data.token };
+                    updated[prev.length - 1] = { ...lastMsg, text: baseText + data.token };
                     return updated;
                 }
                 return [...prev, {
@@ -894,6 +924,22 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         // Optional: Trigger a small toast or state change for visual feedback
     };
 
+    const ensureStreamingPlaceholder = (intent: string) => {
+        setMessages(prev => {
+            const lastMsg = prev[prev.length - 1];
+            if (lastMsg && lastMsg.role === 'system' && lastMsg.isStreaming && lastMsg.intent === intent) {
+                return prev;
+            }
+            return [...prev, {
+                id: Date.now().toString(),
+                role: 'system',
+                text: STREAMING_PLACEHOLDER_TEXT,
+                isStreaming: true,
+                intent
+            }];
+        });
+    };
+
     const handleWhatToSay = async () => {
         setIsExpanded(true);
         setIsProcessing(true);
@@ -913,6 +959,8 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             }]);
         }
 
+        ensureStreamingPlaceholder('what_to_answer');
+
         try {
             // Pass imagePath if attached
             await window.electronAPI.generateWhatToSay(undefined, currentAttachments.length > 0 ? currentAttachments.map(s => s.path) : undefined);
@@ -931,6 +979,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         setIsExpanded(true);
         setIsProcessing(true);
         analytics.trackCommandExecuted('follow_up_' + intent);
+        ensureStreamingPlaceholder(intent);
 
         try {
             await window.electronAPI.generateFollowUp(intent);
@@ -985,6 +1034,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         setIsExpanded(true);
         setIsProcessing(true);
         analytics.trackCommandExecuted('clarify');
+        ensureStreamingPlaceholder('clarify');
 
         try {
             await window.electronAPI.generateClarify();
@@ -1047,6 +1097,8 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 screenshotPreview: currentAttachments[0].preview
             }]);
         }
+
+        ensureStreamingPlaceholder('what_to_answer');
 
         try {
             await window.electronAPI.generateBrainstorm(currentAttachments.length > 0 ? currentAttachments.map(s => s.path) : undefined);
@@ -1278,12 +1330,14 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     const handleAnswerNow = async () => {
         if (isManualRecording) {
             // Stop recording - send accumulated voice input to Gemini
-            isRecordingRef.current = false;  // Update ref immediately
             setIsManualRecording(false);
             setManualTranscript('');  // Clear live preview
 
             // Send manual finalization signal to STT Providers
-            window.electronAPI.finalizeMicSTT().catch(err => console.error('[NativelyInterface] Failed to send finalizeMicSTT:', err));
+            await window.electronAPI.finalizeMicSTT().catch(err => console.error('[NativelyInterface] Failed to send finalizeMicSTT:', err));
+            // Allow final STT flush events to land before building the final transcript.
+            await new Promise(resolve => setTimeout(resolve, 160));
+            isRecordingRef.current = false;
 
             const currentAttachments = attachedContext;
             setAttachedContext([]); // Clear context immediately on send
@@ -1313,14 +1367,8 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 screenshotPreview: currentAttachments[0]?.preview
             }]);
 
-            // Add placeholder for streaming response
-            setMessages(prev => [...prev, {
-                id: Date.now().toString(),
-                role: 'system',
-                text: '',
-                isStreaming: true,
-                intent: 'what_to_answer'
-            }]);
+            // Add placeholder for streaming response immediately
+            ensureStreamingPlaceholder('what_to_answer');
 
             setIsProcessing(true);
 
@@ -1439,6 +1487,29 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
 
     const clearChat = () => {
         setMessages([]);
+    };
+
+    const getConfidenceVisual = (level?: Message['confidenceLevel']) => {
+        if (!level) return null;
+        if (level === 'high') {
+            return {
+                dot: '🟢',
+                label: 'High Confidence',
+                className: isLightTheme ? 'text-emerald-700 bg-emerald-100 border-emerald-300' : 'text-emerald-300 bg-emerald-500/15 border-emerald-400/40'
+            };
+        }
+        if (level === 'medium') {
+            return {
+                dot: '🟡',
+                label: 'Medium Confidence',
+                className: isLightTheme ? 'text-amber-700 bg-amber-100 border-amber-300' : 'text-amber-300 bg-amber-500/15 border-amber-400/40'
+            };
+        }
+        return {
+            dot: '🔴',
+            label: 'Low Confidence',
+            className: isLightTheme ? 'text-rose-700 bg-rose-100 border-rose-300' : 'text-rose-300 bg-rose-500/15 border-rose-400/40'
+        };
     };
 
 
@@ -1636,11 +1707,18 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
         if (msg.intent === 'what_to_answer') {
             // Split text by code blocks (Handle unclosed blocks at EOF)
             const parts = msg.text.split(/(```[\s\S]*?(?:```|$))/g);
+            const confidenceVisual = getConfidenceVisual(msg.confidenceLevel);
 
             return (
                 <div className={`rounded-lg p-3 my-1 border ${subtleSurfaceClass}`} style={appearance.subtleStyle}>
-                    <div className="flex items-center gap-2 mb-2 text-emerald-400 font-semibold text-xs uppercase tracking-wide">
+                    <div className="flex items-center justify-between gap-2 mb-2 text-emerald-400 font-semibold text-xs uppercase tracking-wide">
                         <span>Say this</span>
+                        {confidenceVisual && (
+                            <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border text-[10px] font-semibold normal-case tracking-normal ${confidenceVisual.className}`}>
+                                <span>{confidenceVisual.dot}</span>
+                                <span>{confidenceVisual.label}</span>
+                            </span>
+                        )}
                     </div>
                     <div className="text-[14px] leading-relaxed overlay-text-primary">
                         {parts.map((part, i) => {
@@ -1740,6 +1818,62 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 </ReactMarkdown>
             </div>
         );
+    };
+
+    const renderMessageRow = (msg: Message) => {
+        const cached = messageRowCacheRef.current.get(msg.id);
+        if (cached && cached.msgRef === msg) {
+            return cached.node;
+        }
+
+        const node = (
+            <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-fade-in-up`}>
+                <div className={`
+                      ${msg.role === 'user' ? 'max-w-[72.25%] px-[13.6px] py-[10.2px]' : 'max-w-[85%] px-4 py-3'} text-[14px] leading-relaxed relative group whitespace-pre-wrap
+                      ${msg.role === 'user'
+                        ? (isLightTheme
+                            ? 'bg-blue-500/10 backdrop-blur-md border border-blue-500/20 text-blue-900 rounded-[20px] rounded-tr-[4px] shadow-sm font-medium'
+                            : 'bg-blue-600/20 backdrop-blur-md border border-blue-500/30 text-blue-100 rounded-[20px] rounded-tr-[4px] shadow-sm font-medium')
+                        : ''
+                    }
+                      ${msg.role === 'system'
+                        ? 'overlay-text-primary font-normal'
+                        : ''
+                    }
+                      ${msg.role === 'interviewer'
+                        ? 'overlay-text-muted italic pl-0 text-[13px]'
+                        : ''
+                    }
+                    `}>
+                    {msg.role === 'interviewer' && (
+                        <div className="flex items-center gap-1.5 mb-1 text-[10px] font-medium uppercase tracking-wider overlay-text-muted">
+                            Interviewer
+                            {msg.isStreaming && <span className="w-1 h-1 bg-green-500 rounded-full animate-pulse" />}
+                        </div>
+                    )}
+                    {msg.role === 'user' && msg.hasScreenshot && (
+                        <div className={`flex items-center gap-1 text-[10px] opacity-70 mb-1 border-b pb-1 ${isLightTheme ? 'border-black/10' : 'border-white/10'}`}>
+                            <Image className="w-2.5 h-2.5" />
+                            <span>Screenshot attached</span>
+                        </div>
+                    )}
+                    {msg.role === 'system' && !msg.isStreaming && (
+                        <button
+                            onClick={() => handleCopy(msg.text)}
+                            className="absolute top-2 right-2 p-1.5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity overlay-icon-surface overlay-icon-surface-hover overlay-text-interactive"
+                            title="Copy to clipboard"
+                            style={appearance.iconStyle}
+                        >
+                            <Copy className="w-3.5 h-3.5" />
+                        </button>
+                    )}
+                    {renderMessageText(msg)}
+                </div>
+            </div>
+        );
+
+        messageRowCacheRef.current.set(msg.id, { msgRef: msg, node });
+        return node;
     };
 
 
@@ -2043,51 +2177,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                             {/* Chat History - Only show if there are messages OR active states */}
                             {(messages.length > 0 || isManualRecording || isProcessing) && (
                                 <div ref={scrollContainerRef} className="flex-1 overflow-y-auto p-4 space-y-3 max-h-[clamp(300px,35vh,450px)] no-drag" style={{ scrollbarWidth: 'none' }}>
-                                    {messages.map((msg) => (
-                                        <div key={msg.id} className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'} animate-fade-in-up`}>
-                                            <div className={`
-                      ${msg.role === 'user' ? 'max-w-[72.25%] px-[13.6px] py-[10.2px]' : 'max-w-[85%] px-4 py-3'} text-[14px] leading-relaxed relative group whitespace-pre-wrap
-                      ${msg.role === 'user'
-                                                    ? (isLightTheme
-                                                        ? 'bg-blue-500/10 backdrop-blur-md border border-blue-500/20 text-blue-900 rounded-[20px] rounded-tr-[4px] shadow-sm font-medium'
-                                                        : 'bg-blue-600/20 backdrop-blur-md border border-blue-500/30 text-blue-100 rounded-[20px] rounded-tr-[4px] shadow-sm font-medium')
-                                                    : ''
-                                                }
-                      ${msg.role === 'system'
-                                                    ? 'overlay-text-primary font-normal'
-                                                    : ''
-                                                }
-                      ${msg.role === 'interviewer'
-                                                    ? 'overlay-text-muted italic pl-0 text-[13px]'
-                                                    : ''
-                                                }
-                    `}>
-                                                {msg.role === 'interviewer' && (
-                                                    <div className="flex items-center gap-1.5 mb-1 text-[10px] font-medium uppercase tracking-wider overlay-text-muted">
-                                                        Interviewer
-                                                        {msg.isStreaming && <span className="w-1 h-1 bg-green-500 rounded-full animate-pulse" />}
-                                                    </div>
-                                                )}
-                                                {msg.role === 'user' && msg.hasScreenshot && (
-                                                    <div className={`flex items-center gap-1 text-[10px] opacity-70 mb-1 border-b pb-1 ${isLightTheme ? 'border-black/10' : 'border-white/10'}`}>
-                                                        <Image className="w-2.5 h-2.5" />
-                                                        <span>Screenshot attached</span>
-                                                    </div>
-                                                )}
-                                                {msg.role === 'system' && !msg.isStreaming && (
-                                                    <button
-                                                        onClick={() => handleCopy(msg.text)}
-                                                        className="absolute top-2 right-2 p-1.5 rounded-md opacity-0 group-hover:opacity-100 transition-opacity overlay-icon-surface overlay-icon-surface-hover overlay-text-interactive"
-                                                        title="Copy to clipboard"
-                                                        style={appearance.iconStyle}
-                                                    >
-                                                        <Copy className="w-3.5 h-3.5" />
-                                                    </button>
-                                                )}
-                                                {renderMessageText(msg)}
-                                            </div>
-                                        </div>
-                                    ))}
+                                    {messages.map((msg) => renderMessageRow(msg))}
 
                                     {/* Active Recording State with Live Transcription */}
                                     {isManualRecording && (
