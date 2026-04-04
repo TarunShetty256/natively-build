@@ -1128,8 +1128,18 @@ export class AppState {
     if (this.isMeetingActive) {
       this.systemAudioCapture?.start();
       this.microphoneCapture?.start();
-      this.googleSTT?.start();
-      this.googleSTT_User?.start();
+
+      // setupSystemAudioPipeline usually recreates these; keep a defensive fallback
+      // so TypeScript and runtime both handle the reconfigure path safely.
+      if (!this.googleSTT) {
+        this.googleSTT = this.createSTTProvider('interviewer');
+      }
+      if (!this.googleSTT_User) {
+        this.googleSTT_User = this.createSTTProvider('user');
+      }
+
+      this.googleSTT.start?.();
+      this.googleSTT_User.start?.();
     }
 
     console.log('[Main] STT Provider reconfigured');
@@ -1810,11 +1820,13 @@ export class AppState {
       let captureArea: Electron.Rectangle | undefined;
 
       if (process.platform === 'win32' || process.platform === 'darwin') {
-        captureArea = await this.cropperWindowHelper.showCropper();
+        const selectedArea = await this.cropperWindowHelper.showCropper();
 
-        if (!captureArea) {
+        if (!selectedArea) {
           throw new Error("Selection cancelled");
         }
+
+        captureArea = selectedArea;
       }
 
       return this.screenshotHelper.takeSelectiveScreenshot(captureArea)

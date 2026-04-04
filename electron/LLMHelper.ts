@@ -34,6 +34,8 @@ const OPENAI_MODEL = "gpt-5.4"
 const CLAUDE_MODEL = "claude-sonnet-4-6"
 const MAX_OUTPUT_TOKENS = 65536
 const CLAUDE_MAX_OUTPUT_TOKENS = 64000
+const REALTIME_RESPONSE_TIMEOUT_MS = 2800
+const GRACEFUL_FALLBACK_MESSAGE = "⚠️ I'm currently experiencing high demand and couldn't generate a response right now. Please try again in a few moments."
 
 // Simple prompt for image analysis (not interview copilot - kept separate)
 const IMAGE_ANALYSIS_PROMPT = `Analyze concisely. Be direct. No markdown formatting. Return plain text only.`
@@ -924,6 +926,53 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     return `${header}${systemPrompt}${footer}`;
   }
 
+  private getGracefulFallbackMessage(): string {
+    return GRACEFUL_FALLBACK_MESSAGE;
+  }
+
+  private async * streamWithRealtimeFallback(
+    streamFactory: () => AsyncGenerator<string, void, unknown>
+  ): AsyncGenerator<string, void, unknown> {
+    let stream: AsyncGenerator<string, void, unknown> | null = null;
+
+    try {
+      stream = streamFactory();
+      const first = await this.withTimeout(
+        stream.next(),
+        REALTIME_RESPONSE_TIMEOUT_MS,
+        'Realtime first-token timeout'
+      );
+
+      const firstValue = typeof first.value === 'string' ? first.value : '';
+      if (first.done || !firstValue.trim()) {
+        try {
+          await stream.return?.(undefined);
+        } catch {
+          // best-effort stream cleanup
+        }
+        yield this.getGracefulFallbackMessage();
+        return;
+      }
+
+      yield firstValue;
+
+      for await (const chunk of stream) {
+        if (typeof chunk === 'string' && chunk.length > 0) {
+          yield chunk;
+        }
+      }
+    } catch {
+      if (stream) {
+        try {
+          await stream.return?.(undefined);
+        } catch {
+          // best-effort stream cleanup
+        }
+      }
+      yield this.getGracefulFallbackMessage();
+    }
+  }
+
   public async chatWithGemini(message: string, imagePaths?: string[], context?: string, skipSystemPrompt: boolean = false, alternateGroqMessage?: string): Promise<string> {
     try {
       console.log(`[LLMHelper] chatWithGemini called with message:`, message.substring(0, 50))
@@ -1002,9 +1051,13 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       if (this.groqFastTextMode && !isMultimodal && this.groqClient) {
         console.log(`[LLMHelper] ⚡️ Groq Fast Text Mode Active. Routing to Groq...`);
         try {
-          return await this.generateWithGroq(
-            combinedMessages.groq,
-            this.isGroqModel(this.currentModelId) ? this.currentModelId : GROQ_MODEL
+          return await this.withTimeout(
+            this.generateWithGroq(
+              combinedMessages.groq,
+              this.isGroqModel(this.currentModelId) ? this.currentModelId : GROQ_MODEL
+            ),
+            REALTIME_RESPONSE_TIMEOUT_MS,
+            'Groq fast mode timeout'
           );
         } catch (e: any) {
           console.warn("[LLMHelper] Groq Fast Text failed, falling back to standard routing:", e.message);
@@ -1017,40 +1070,68 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       const claudeSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(CLAUDE_SYSTEM_PROMPT);
 
       if (this.useOllama || route.useOllama) {
-        return await this.callOllama(combinedMessages.gemini, imagePaths?.[0]);
+        return await this.withTimeout(
+          this.callOllama(combinedMessages.gemini, imagePaths?.[0]),
+          REALTIME_RESPONSE_TIMEOUT_MS,
+          'Ollama realtime timeout'
+        );
       }
 
       if (this.activeCurlProvider) {
-        return await this.chatWithCurl(message, skipSystemPrompt ? undefined : this.injectLanguageInstruction(CUSTOM_SYSTEM_PROMPT), imagePaths?.[0]);
+        return await this.withTimeout(
+          this.chatWithCurl(message, skipSystemPrompt ? undefined : this.injectLanguageInstruction(CUSTOM_SYSTEM_PROMPT), imagePaths?.[0]),
+          REALTIME_RESPONSE_TIMEOUT_MS,
+          'Custom cURL realtime timeout'
+        );
       }
 
       if (this.customProvider) {
         console.log(`[LLMHelper] Using Custom Provider: ${this.customProvider.name}`);
         // For non-streaming call — use rich CUSTOM prompts since custom providers can be cloud models
         const customSystemPrompt = skipSystemPrompt ? "" : this.injectLanguageInstruction(CUSTOM_SYSTEM_PROMPT);
-        const response = await this.executeCustomProvider(
-          this.customProvider.curlCommand,
-          combinedMessages.gemini,
-          customSystemPrompt,
-          message,
-          context || "",
-          imagePaths?.[0]
+        const response = await this.withTimeout(
+          this.executeCustomProvider(
+            this.customProvider.curlCommand,
+            combinedMessages.gemini,
+            customSystemPrompt,
+            message,
+            context || "",
+            imagePaths?.[0]
+          ),
+          REALTIME_RESPONSE_TIMEOUT_MS,
+          'Custom provider realtime timeout'
         );
         return this.processResponse(response);
       }
 
       // --- Direct Routing based on Selected Model ---
       if (this.isOpenAiModel(routedModelId) && this.openaiClient) {
-        return await this.generateWithOpenai(userContent, openaiSystemPrompt, imagePaths, routedModelId);
+        return await this.withTimeout(
+          this.generateWithOpenai(userContent, openaiSystemPrompt, imagePaths, routedModelId),
+          REALTIME_RESPONSE_TIMEOUT_MS,
+          'OpenAI realtime timeout'
+        );
       }
       if (this.isClaudeModel(routedModelId) && this.claudeClient) {
-        return await this.generateWithClaude(userContent, claudeSystemPrompt, imagePaths, routedModelId);
+        return await this.withTimeout(
+          this.generateWithClaude(userContent, claudeSystemPrompt, imagePaths, routedModelId),
+          REALTIME_RESPONSE_TIMEOUT_MS,
+          'Claude realtime timeout'
+        );
       }
       if (this.isGroqModel(routedModelId) && this.groqClient) {
         if (isMultimodal && imagePaths) {
-          return await this.generateWithGroqMultimodal(userContent, imagePaths, openaiSystemPrompt);
+          return await this.withTimeout(
+            this.generateWithGroqMultimodal(userContent, imagePaths, openaiSystemPrompt),
+            REALTIME_RESPONSE_TIMEOUT_MS,
+            'Groq multimodal realtime timeout'
+          );
         }
-        return await this.generateWithGroq(combinedMessages.groq, routedModelId);
+        return await this.withTimeout(
+          this.generateWithGroq(combinedMessages.groq, routedModelId),
+          REALTIME_RESPONSE_TIMEOUT_MS,
+          'Groq realtime timeout'
+        );
       }
 
       // Fallback (Gemini) - logic handled below by SMART DYNAMIC FALLBACK list
@@ -1121,14 +1202,14 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
 
       if (providers.length === 0) {
-        return "No AI providers configured. Please add at least one API key in Settings.";
+        return this.getGracefulFallbackMessage();
       }
 
       // ============================================================
       // RELENTLESS RETRY: Try all providers, then retry entire chain
       // with exponential backoff. Max 2 full rotations.
       // ============================================================
-      const MAX_FULL_ROTATIONS = 3;
+      const MAX_FULL_ROTATIONS = 1;
 
       for (let rotation = 0; rotation < MAX_FULL_ROTATIONS; rotation++) {
         if (rotation > 0) {
@@ -1140,7 +1221,11 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         for (const provider of providers) {
           try {
             console.log(`[LLMHelper] ${rotation === 0 ? '🚀' : '🔁'} Attempting ${provider.name}...`);
-            const rawResponse = await provider.execute();
+            const rawResponse = await this.withTimeout(
+              provider.execute(),
+              REALTIME_RESPONSE_TIMEOUT_MS,
+              `${provider.name} realtime timeout`
+            );
             if (rawResponse && rawResponse.trim().length > 0) {
               console.log(`[LLMHelper] ✅ ${provider.name} succeeded`);
               return this.processResponse(rawResponse);
@@ -1154,18 +1239,11 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
       // All exhausted
       console.error("[LLMHelper] ❌ All non-streaming providers exhausted");
-      return "I apologize, but I couldn't generate a response. Please try again.";
+      return this.getGracefulFallbackMessage();
 
     } catch (error: any) {
       console.error("[LLMHelper] Critical Error in chatWithGemini:", error);
-
-      if (error.message.includes("503") || error.message.includes("overloaded")) {
-        return "The AI service is currently overloaded. Please try again in a moment.";
-      }
-      if (error.message.includes("API key")) {
-        return "Authentication failed. Please check your API key in settings.";
-      }
-      return `I encountered an error: ${error.message || "Unknown error"}. Please try again.`;
+      return this.getGracefulFallbackMessage();
     }
   }
 
@@ -1943,8 +2021,20 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     };
 
     if (this.useOllama) {
-      const response = await this.callOllama(combinedMessages.gemini, imagePaths?.[0]);
-      yield response;
+      try {
+        const response = await this.withTimeout(
+          this.callOllama(combinedMessages.gemini, imagePaths?.[0]),
+          REALTIME_RESPONSE_TIMEOUT_MS,
+          'Ollama realtime timeout'
+        );
+        if (!response || !response.trim()) {
+          yield this.getGracefulFallbackMessage();
+          return;
+        }
+        yield response;
+      } catch {
+        yield this.getGracefulFallbackMessage();
+      }
       return;
     }
 
@@ -2004,7 +2094,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     }
 
     if (providers.length === 0) {
-      yield "No AI providers configured. Please add at least one API key in Settings.";
+      yield this.getGracefulFallbackMessage();
       return;
     }
 
@@ -2031,7 +2121,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // RELENTLESS RETRY: Try all providers, then retry entire chain
     // with exponential backoff. Max 2 full rotations.
     // ============================================================
-    const MAX_FULL_ROTATIONS = 3;
+    const MAX_FULL_ROTATIONS = 1;
 
     for (let rotation = 0; rotation < MAX_FULL_ROTATIONS; rotation++) {
       if (rotation > 0) {
@@ -2044,7 +2134,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         const provider = providers[i];
         try {
           console.log(`[LLMHelper] ${rotation === 0 ? '🚀' : '🔁'} Attempting ${provider.name}...`);
-          yield* provider.execute();
+          yield* this.streamWithRealtimeFallback(() => provider.execute());
           console.log(`[LLMHelper] ✅ ${provider.name} stream completed successfully`);
           return; // SUCCESS — exit immediately
         } catch (err: any) {
@@ -2056,7 +2146,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     // Truly exhausted after all rotations
     console.error(`[LLMHelper] ❌ All providers exhausted after ${MAX_FULL_ROTATIONS} rotations`);
-    yield "All AI services are currently unavailable. Please check your API keys and try again.";
+    yield this.getGracefulFallbackMessage();
   }
 
   /**
@@ -2130,10 +2220,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         const groqSystem = systemPromptOverride || GROQ_SYSTEM_PROMPT;
         const finalGroqSystem = this.injectLanguageInstruction(groqSystem);
         const groqFullMessage = `${finalGroqSystem}\n\n${userContent}`;
-        yield* this.streamWithGroq(
+        yield* this.streamWithRealtimeFallback(() => this.streamWithGroq(
           groqFullMessage,
           this.isGroqModel(this.currentModelId) ? this.currentModelId : GROQ_MODEL
-        );
+        ));
         return;
       } catch (e: any) {
         console.warn("[LLMHelper] Groq Fast Text streaming failed, falling back:", e.message);
@@ -2143,25 +2233,26 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     // 1. Ollama Streaming
     if (this.useOllama || route.useOllama) {
-      yield* this.streamWithOllama(message, context, finalSystemPrompt, imagePaths);
+      yield* this.streamWithRealtimeFallback(() => this.streamWithOllama(message, context, finalSystemPrompt, imagePaths));
       return;
     }
 
     // 2. Custom Provider Streaming (active cURL provider)
     if (this.activeCurlProvider) {
-      yield* this.streamWithCustom(
+      const activeCurlProvider = this.activeCurlProvider;
+      yield* this.streamWithRealtimeFallback(() => this.streamWithCustom(
         message,
         context,
         imagePaths,
         finalSystemPrompt,
-        this.activeCurlProvider.curlCommand
-      );
+        activeCurlProvider.curlCommand
+      ));
       return;
     }
 
     // 2b. CustomProvider (switchToCustom path) — full SSE-capable streaming
     if (this.customProvider) {
-      yield* this.streamWithCustom(message, context, imagePaths, finalSystemPrompt);
+      yield* this.streamWithRealtimeFallback(() => this.streamWithCustom(message, context, imagePaths, finalSystemPrompt));
       return;
     }
 
@@ -2172,9 +2263,9 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       const openAiSystem = systemPromptOverride || OPENAI_SYSTEM_PROMPT;
       const finalOpenAiSystem = this.injectLanguageInstruction(openAiSystem);
       if (isMultimodal && imagePaths) {
-        yield* this.streamWithOpenaiMultimodal(userContent, imagePaths, finalOpenAiSystem, routedModelId);
+        yield* this.streamWithRealtimeFallback(() => this.streamWithOpenaiMultimodal(userContent, imagePaths, finalOpenAiSystem, routedModelId));
       } else {
-        yield* this.streamWithOpenai(userContent, finalOpenAiSystem, routedModelId);
+        yield* this.streamWithRealtimeFallback(() => this.streamWithOpenai(userContent, finalOpenAiSystem, routedModelId));
       }
       return;
     }
@@ -2184,9 +2275,9 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       const claudeSystem = systemPromptOverride || CLAUDE_SYSTEM_PROMPT;
       const finalClaudeSystem = this.injectLanguageInstruction(claudeSystem);
       if (isMultimodal && imagePaths) {
-        yield* this.streamWithClaudeMultimodal(userContent, imagePaths, finalClaudeSystem, routedModelId);
+        yield* this.streamWithRealtimeFallback(() => this.streamWithClaudeMultimodal(userContent, imagePaths, finalClaudeSystem, routedModelId));
       } else {
-        yield* this.streamWithClaude(userContent, finalClaudeSystem, routedModelId);
+        yield* this.streamWithRealtimeFallback(() => this.streamWithClaude(userContent, finalClaudeSystem, routedModelId));
       }
       return;
     }
@@ -2197,14 +2288,14 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         // Route multimodal to Groq Llama 4 Scout (vision-capable)
         const groqSystem = systemPromptOverride || OPENAI_SYSTEM_PROMPT;
         const finalGroqSystem = this.injectLanguageInstruction(groqSystem);
-        yield* this.streamWithGroqMultimodal(userContent, imagePaths, finalGroqSystem);
+        yield* this.streamWithRealtimeFallback(() => this.streamWithGroqMultimodal(userContent, imagePaths, finalGroqSystem));
         return;
       }
       // Text-only Groq
       const groqSystem = systemPromptOverride ? baseSystemPrompt : GROQ_SYSTEM_PROMPT;
       const finalGroqSystem = this.injectLanguageInstruction(groqSystem);
       const groqFullMessage = `${finalGroqSystem}\n\n${userContent}`;
-      yield* this.streamWithGroq(groqFullMessage, routedModelId);
+      yield* this.streamWithRealtimeFallback(() => this.streamWithGroq(groqFullMessage, routedModelId));
       return;
     }
 
@@ -2213,15 +2304,16 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       // Direct model use if specified
       if (this.isGeminiModel(routedModelId)) {
         const fullMsg = `${finalSystemPrompt}\n\n${userContent}`;
-        yield* this.streamWithGeminiModel(fullMsg, routedModelId, imagePaths);
+        yield* this.streamWithRealtimeFallback(() => this.streamWithGeminiModel(fullMsg, routedModelId, imagePaths));
         return;
       }
 
       // Default Gemini fallback path: real streaming with model fallback (no buffered fake chunking)
       const raceMsg = `${finalSystemPrompt}\n\n${userContent}`;
-      yield* this.streamWithGeminiParallelRace(raceMsg, imagePaths);
+      yield* this.streamWithRealtimeFallback(() => this.streamWithGeminiParallelRace(raceMsg, imagePaths));
     } else {
-      throw new Error("No LLM provider available");
+      yield this.getGracefulFallbackMessage();
+      return;
     }
   }
 
