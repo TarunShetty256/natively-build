@@ -1758,6 +1758,35 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  // MODE: Answer (Manual speech capture)
+  // Uses the same shared WhatToAnswer pipeline so persona/prompt behavior remains consistent.
+  safeHandle("generate-answer", async (_, input: string, imagePaths?: string[]) => {
+    try {
+      const intelligenceManager = appState.getIntelligenceManager();
+
+      const resolvedImagePaths: string[] =
+        imagePaths && imagePaths.length > 0
+          ? imagePaths
+          : appState.getScreenshotQueue();
+
+      const trimmedInput = (input || '').trim();
+      const answer = await intelligenceManager.runWhatShouldISay(
+        trimmedInput || undefined,
+        1.0,
+        resolvedImagePaths.length > 0 ? resolvedImagePaths : undefined
+      );
+
+      if (answer === null) {
+        const win = appState.getMainWindow();
+        win?.webContents.send('intelligence-error', { error: 'Could not generate an answer. Try again.', mode: 'what_to_say' });
+      }
+
+      return { answer, question: trimmedInput || 'inferred from context' };
+    } catch (error: any) {
+      throw error;
+    }
+  });
+
   safeHandle("generate-clarify", async () => {
     try {
       const intelligenceManager = appState.getIntelligenceManager();

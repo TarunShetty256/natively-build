@@ -7,6 +7,13 @@ export interface WhatToAnswerRequest {
     transcriptWindow?: string;
     intentResult?: IntentResult;
     lastAnswer?: string | null;
+    previousQuestion?: string | null;
+    previousAnswer?: string | null;
+    recentQAPairs?: Array<{ question: string; answer: string }>;
+    isFollowUp?: boolean;
+    followUpFocus?: string | null;
+    relatedToPrevious?: boolean;
+    forceVariation?: boolean;
     modeHint?: 'what_to_say' | 'answer';
     resume?: string | null;
     personaEnabled?: boolean;
@@ -37,24 +44,6 @@ export class WhatToAnswerLLM {
                 throw new Error('Missing latestQuestion for WhatToAnswerLLM.generateStream');
             }
 
-            const isOllama = this.llmHelper.getCurrentProvider() === 'ollama';
-
-            const transcriptWindow = (request.transcriptWindow || '').trim();
-            const windowForPrompt = transcriptWindow || `[INTERVIEWER]: ${latestQuestion}`;
-
-            const lines = windowForPrompt
-                .split('\n')
-                .map(l => l.trim())
-                .filter(Boolean);
-
-            // Smaller local models perform better with concise, role-focused context.
-            const compactConversation = isOllama
-                ? lines
-                    .filter(l => !l.startsWith('[ASSISTANT'))
-                    .slice(-8)
-                    .join('\n')
-                : windowForPrompt;
-
             let contextParts: string[] = [];
 
             contextParts.push(`<focus_question>
@@ -62,7 +51,6 @@ LATEST INTERVIEWER QUESTION: ${latestQuestion}
 </focus_question>`);
             contextParts.push(`<critical_rules>
 Answer ONLY the latest interviewer question above.
-Use transcript window only for factual support.
 Avoid repeating your immediately previous answer wording.
 </critical_rules>`);
             contextParts.push(`<interview_style>
@@ -86,6 +74,52 @@ Output only the spoken answer in natural English.
 No bullet points.
 </interview_style>`);
 
+            const previousQuestion = (request.previousQuestion || '').trim();
+            const previousAnswer = (request.previousAnswer || '').trim();
+            const recentPairs = (request.recentQAPairs || [])
+                .slice(-5)
+                .map((pair, idx) => {
+                    const q = (pair.question || '').trim();
+                    const a = (pair.answer || '').trim();
+                    if (!q || !a) return null;
+                    const clippedAnswer = a.length > 220 ? `${a.slice(0, 220)}...` : a;
+                    return `${idx + 1}. Q: ${q}\n   A: ${clippedAnswer}`;
+                })
+                .filter((x): x is string => !!x)
+                .join('\n');
+
+            if (previousQuestion || previousAnswer) {
+                contextParts.push(`<conversation_memory>
+PREVIOUS QUESTION: ${previousQuestion || 'N/A'}
+PREVIOUS ANSWER: ${previousAnswer || 'N/A'}
+</conversation_memory>`);
+            }
+
+            if (recentPairs) {
+                contextParts.push(`<recent_qa_pairs>
+${recentPairs}
+</recent_qa_pairs>`);
+            }
+
+            const continuityInstructions: string[] = [];
+            if (request.isFollowUp) {
+                continuityInstructions.push('This is a follow-up question. Build on the previous answer instead of restarting from scratch.');
+            }
+            if (request.relatedToPrevious) {
+                continuityInstructions.push('Current question is related to the previous question. Keep continuity and extend the reasoning.');
+            }
+            if (request.followUpFocus) {
+                continuityInstructions.push(`Follow-up focus area: ${request.followUpFocus}.`);
+            }
+            if (request.forceVariation) {
+                continuityInstructions.push('Strong anti-repetition: change sentence structure and use a different concrete example than the previous answer.');
+            }
+            if (continuityInstructions.length > 0) {
+                contextParts.push(`<continuity_rules>
+${continuityInstructions.join('\n')}
+</continuity_rules>`);
+            }
+
             if (request.modeHint) {
                 contextParts.push(`<mode>
 ACTIVE MODE: ${request.modeHint}
@@ -108,9 +142,7 @@ LAST ANSWER (do not repeat verbatim): ${clipped}
             }
 
             const extraContext = contextParts.join('\n\n');
-            const fullMessage = extraContext
-                ? `${extraContext}\n\nRECENT TRANSCRIPT WINDOW:\n${compactConversation}`
-                : compactConversation;
+            const fullMessage = extraContext;
 
             let prompt = UNIVERSAL_WHAT_TO_ANSWER_PROMPT;
             const resume = (request.resume || '').trim();

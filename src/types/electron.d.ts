@@ -120,6 +120,7 @@ export interface ElectronAPI {
   // Intelligence Mode IPC
   generateAssist: () => Promise<{ insight: string | null }>
   generateWhatToSay: (question?: string, imagePaths?: string[]) => Promise<{ answer: string | null; question?: string; error?: string }>
+  generateAnswer: (input: string, imagePaths?: string[]) => Promise<{ answer: string | null; question?: string }>
   generateClarify: () => Promise<{ clarification: string | null }>
   generateCodeHint: (imagePaths?: string[], problemStatement?: string) => Promise<{ hint: string | null }>
   generateBrainstorm: (imagePaths?: string[], problemStatement?: string) => Promise<{ script: string | null }>

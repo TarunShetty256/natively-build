@@ -1318,46 +1318,18 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
                 id: Date.now().toString(),
                 role: 'system',
                 text: '',
-                isStreaming: true
+                isStreaming: true,
+                intent: 'what_to_answer'
             }]);
 
             setIsProcessing(true);
 
             try {
-                let prompt = '';
-
-                if (currentAttachments.length > 0) {
-                    // Image + Voice Context
-                    prompt = `You are a helper. The user has provided a screenshot and a spoken question/command.
-User said: "${question}"
-
-Instructions:
-1. Analyze the screenshot in the context of what the user said.
-2. Provide a direct, helpful answer.
-3. Be concise.`;
-                } else {
-                    // JIT RAG pre-flight: try to use indexed meeting context first
-                    const ragResult = await window.electronAPI.ragQueryLive?.(question);
-                    if (ragResult?.success) {
-                        // JIT RAG handled it — response streamed via rag:stream-chunk events
-                        return;
-                    }
-
-                    // Voice Only (Smart Extract) — fallback
-                    prompt = `You are a real-time interview assistant. The user just repeated or paraphrased a question from their interviewer.
-Instructions:
-1. Extract the core question being asked
-2. Provide a clear, concise, and professional answer that the user can say out loud
-3. Keep the answer conversational but informative (2-4 sentences ideal)
-4. Do NOT include phrases like "The question is..." - just give the answer directly
-5. Format for speaking out loud, not for reading
-
-Provide only the answer, nothing else.`;
-                }
-
-                // Call Streaming API: message = question, context = instructions
-                requestStartTimeRef.current = Date.now();
-                await window.electronAPI.streamGeminiChat(question, currentAttachments.length > 0 ? currentAttachments.map(s => s.path) : undefined, prompt, { skipSystemPrompt: true });
+                // Route through the shared IntelligenceEngine pipeline (same as What to Answer)
+                await window.electronAPI.generateAnswer(
+                    question,
+                    currentAttachments.length > 0 ? currentAttachments.map(s => s.path) : undefined
+                );
 
             } catch (err) {
                 // Initial invocation failing (e.g. IPC error before stream starts)

@@ -38,6 +38,60 @@ function detectRefinementIntent(userText: string): { isRefinement: boolean; inte
     return { isRefinement: false, intent: '' };
 }
 
+function tokenizeForSimilarity(text: string): string[] {
+    return (text || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter(Boolean)
+        .filter(token => token.length > 2);
+}
+
+function jaccardSimilarity(a: string, b: string): number {
+    const left = new Set(tokenizeForSimilarity(a));
+    const right = new Set(tokenizeForSimilarity(b));
+    if (left.size === 0 || right.size === 0) return 0;
+
+    let intersection = 0;
+    for (const token of left) {
+        if (right.has(token)) intersection++;
+    }
+    const union = left.size + right.size - intersection;
+    return union === 0 ? 0 : intersection / union;
+}
+
+function detectAutoFollowUpFocus(question: string): string | null {
+    const q = (question || '').trim().toLowerCase();
+    if (!q) return null;
+
+    if (/\b(why|how)\b\s*\??$/.test(q) || /^why\b|^how\b/.test(q)) return 'reasoning';
+    if (/go deeper|deeper|elaborate|expand|explain more|tell me more|can you go deeper/.test(q)) return 'depth';
+    if (/scalability|scale|throughput|latency|availability|reliability|fault tolerance|trade[- ]?off/.test(q)) return 'scalability';
+    if (/what about\b/.test(q)) return 'edge_cases';
+    return null;
+}
+
+function isRelatedToPreviousQuestion(currentQuestion: string, previousQuestion: string | null): boolean {
+    const current = (currentQuestion || '').trim().toLowerCase();
+    const previous = (previousQuestion || '').trim().toLowerCase();
+    if (!current || !previous) return false;
+
+    if (current === previous) return true;
+    if (/(that|this|it|those|them|these)/.test(current) && current.split(/\s+/).length <= 8) return true;
+    return jaccardSimilarity(current, previous) >= 0.35;
+}
+
+function isLikelyAutoFollowUp(currentQuestion: string, previousQuestion: string | null): boolean {
+    const focus = detectAutoFollowUpFocus(currentQuestion);
+    if (focus) return true;
+
+    const q = (currentQuestion || '').trim().toLowerCase();
+    if (!q) return false;
+    if (/^(and|also|then|okay|right|so)\b/.test(q) && q.split(/\s+/).length <= 10) return true;
+
+    return isRelatedToPreviousQuestion(currentQuestion, previousQuestion);
+}
+
 // Events emitted by IntelligenceEngine
 export interface IntelligenceModeEvents {
     'assist_update': (insight: string) => void;
@@ -239,8 +293,12 @@ export class IntelligenceEngine extends EventEmitter {
      */
     async runWhatShouldISay(question?: string, confidence: number = 0.8, imagePaths?: string[]): Promise<string | null> {
         const now = Date.now();
+        const explicitQuestion = (question || '').trim();
+        const isExplicitRequest = explicitQuestion.length > 0 || !!(imagePaths && imagePaths.length > 0);
 
-        if (now - this.lastTriggerTime < this.triggerCooldown) {
+        // Cooldown is only for inferred/auto triggers. Explicit user requests (typed/speech/image)
+        // should run immediately to keep manual actions responsive.
+        if (!isExplicitRequest && now - this.lastTriggerTime < this.triggerCooldown) {
             return null;
         }
 
@@ -253,8 +311,6 @@ export class IntelligenceEngine extends EventEmitter {
         this.lastTriggerTime = now;
 
         try {
-            const explicitQuestion = (question || '').trim();
-
             if (!this.whatToAnswerLLM) {
                 if (!this.answerLLM) {
                     this.setMode('idle');
@@ -308,6 +364,11 @@ export class IntelligenceEngine extends EventEmitter {
             const resolvedQuestion = explicitQuestion || extracted.question || runtimeState.lastQuestion || '';
             const inferredQuestion = resolvedQuestion || 'inferred';
             const questionWindow = extracted.transcriptWindow || buildQuestionFocusedTranscriptWindow(transcriptTurns, 8);
+            const autoFollowUp = isLikelyAutoFollowUp(resolvedQuestion, runtimeState.lastQuestion);
+            const followUpFocus = detectAutoFollowUpFocus(resolvedQuestion);
+            const relatedToPrevious = isRelatedToPreviousQuestion(resolvedQuestion, runtimeState.lastQuestion);
+            const forceVariation = autoFollowUp || relatedToPrevious;
+            const recentQAPairs = this.stateManager.getRecentQAPairs(5);
 
             if (resolvedQuestion) {
                 this.stateManager.setLastQuestion(resolvedQuestion);
@@ -356,9 +417,15 @@ export class IntelligenceEngine extends EventEmitter {
             // to properly terminate the network request when a new generation starts.
             const stream = this.whatToAnswerLLM.generateStream({
                 latestQuestion: resolvedQuestion || 'Please repeat the interviewer question clearly.',
-                transcriptWindow: questionWindow,
                 intentResult,
                 lastAnswer: runtimeState.lastAnswer,
+                previousQuestion: runtimeState.lastQuestion,
+                previousAnswer: runtimeState.lastAnswer,
+                recentQAPairs,
+                isFollowUp: autoFollowUp,
+                followUpFocus,
+                relatedToPrevious,
+                forceVariation,
                 modeHint: 'what_to_say',
                 resume,
                 personaEnabled
@@ -400,11 +467,21 @@ export class IntelligenceEngine extends EventEmitter {
                 return null;
             }
 
+            if (runtimeState.lastAnswer) {
+                fullAnswer = await this.diversifyAnswerIfNeeded(
+                    fullAnswer,
+                    resolvedQuestion || inferredQuestion,
+                    runtimeState.lastAnswer,
+                    forceVariation
+                );
+            }
+
             this.session.addAssistantMessage(fullAnswer);
             this.stateManager.setLastAnswer(fullAnswer);
             if (resolvedQuestion) {
                 this.stateManager.setLastQuestion(resolvedQuestion);
             }
+            this.stateManager.pushQAPair(resolvedQuestion || inferredQuestion, fullAnswer);
 
             this.lastWhatToSayInputKey = inputKey;
             this.lastWhatToSayOutput = fullAnswer;
@@ -487,6 +564,7 @@ export class IntelligenceEngine extends EventEmitter {
             if (!streamAborted && fullRefined) {
                 this.session.addAssistantMessage(fullRefined);
                 this.stateManager.setLastAnswer(fullRefined);
+                this.stateManager.pushQAPair(runtimeState.lastQuestion, fullRefined);
                 this.emit('refined_answer', fullRefined, intent);
 
                 const intentMap: Record<string, string> = {
@@ -738,6 +816,7 @@ export class IntelligenceEngine extends EventEmitter {
             if (answer) {
                 this.session.addAssistantMessage(answer);
                 this.stateManager.setLastAnswer(answer);
+                this.stateManager.pushQAPair(question, answer);
                 this.emit('manual_answer_result', answer, question);
 
                 this.session.pushUsage({
@@ -931,6 +1010,40 @@ export class IntelligenceEngine extends EventEmitter {
     // ============================================
     // State Management
     // ============================================
+
+    private isAnswerTooSimilar(candidate: string, previousAnswer: string): boolean {
+        const a = (candidate || '').trim();
+        const b = (previousAnswer || '').trim();
+        if (!a || !b) return false;
+        if (a.toLowerCase() === b.toLowerCase()) return true;
+
+        const similarity = jaccardSimilarity(a, b);
+        // High lexical overlap suggests repetitive answer structure/content.
+        return similarity >= 0.72;
+    }
+
+    private async diversifyAnswerIfNeeded(
+        candidate: string,
+        question: string,
+        previousAnswer: string,
+        forceVariation: boolean
+    ): Promise<string> {
+        const shouldDiversify = forceVariation || this.isAnswerTooSimilar(candidate, previousAnswer);
+        if (!shouldDiversify || !this.followUpLLM) {
+            return candidate;
+        }
+
+        try {
+            const diversified = await this.followUpLLM.generate(
+                candidate,
+                `Rephrase this answer with a different structure and a different concrete example while preserving correctness. Keep it concise and directly answer: "${question}".`
+            );
+            const clean = (diversified || '').trim();
+            return clean.length > 0 ? clean : candidate;
+        } catch {
+            return candidate;
+        }
+    }
 
     private setMode(mode: IntelligenceMode): void {
         this.stateManager.setMode(mode);

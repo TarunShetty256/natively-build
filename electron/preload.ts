@@ -95,6 +95,7 @@ interface ElectronAPI {
   // Intelligence Mode IPC
   generateAssist: () => Promise<{ insight: string | null }>
   generateWhatToSay: (question?: string, imagePaths?: string[]) => Promise<{ answer: string | null; question?: string; error?: string }>
+  generateAnswer: (input: string, imagePaths?: string[]) => Promise<{ answer: string | null; question?: string }>
   generateFollowUp: (intent: string, userRequest?: string) => Promise<{ refined: string | null; intent: string }>
   generateRecap: () => Promise<{ summary: string | null }>
   submitManualQuestion: (question: string) => Promise<{ answer: string | null; question: string }>
@@ -586,6 +587,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // Intelligence Mode IPC
   generateAssist: () => ipcRenderer.invoke("generate-assist"),
   generateWhatToSay: (question?: string, imagePaths?: string[]) => ipcRenderer.invoke("generate-what-to-say", question, imagePaths),
+  generateAnswer: (input: string, imagePaths?: string[]) => ipcRenderer.invoke("generate-answer", input, imagePaths),
   generateClarify: () => ipcRenderer.invoke("generate-clarify"),
   generateCodeHint: (imagePaths?: string[], problemStatement?: string) => ipcRenderer.invoke("generate-code-hint", imagePaths, problemStatement),
   generateBrainstorm: (imagePaths?: string[], problemStatement?: string) => ipcRenderer.invoke("generate-brainstorm", imagePaths, problemStatement),
