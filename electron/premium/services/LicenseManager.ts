@@ -14,7 +14,7 @@ type StorageLike = {
 
 const STORAGE_KEY = 'natively_premium_active';
 const STORAGE_FILE = 'premium-localStorage.json';
-const MONGODB_URI = ""
+const MONGODB_URI = "mongodb+srv://tarunshetty256_db_user:126XQ2Ao7Mbd89X1@cluster0.vnezbeg.mongodb.net/?appName=Cluster0";
 const MONGODB_DB_NAME = 'natively';
 const MONGODB_LICENSE_COLLECTION = 'licenseverify';
 
