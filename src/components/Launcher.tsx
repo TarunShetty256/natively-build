@@ -809,7 +809,7 @@ const Launcher: React.FC<LauncherProps> = ({
                               animate={{ opacity: 1, y: 0 }}
                               exit={{ opacity: 0, y: -6 }}
                               transition={{ duration: 0.22, ease: "easeOut" }}
-                              className="w-[200px] h-[26px] flex items-center justify-center gap-3 rounded-full 
+                              className="w-[176px] h-[26px] flex items-center justify-center gap-3 rounded-full 
   bg-purple-500/15 hover:bg-purple-500/25 
   border border-emerald-500/20 hover:border-emerald-500/40"
                             >
@@ -829,7 +829,7 @@ const Launcher: React.FC<LauncherProps> = ({
                               animate={{ opacity: 1, y: 0 }}
                               exit={{ opacity: 0, y: -6 }}
                               transition={{ duration: 0.22, ease: "easeOut" }}
-                              className="w-[200px] h-[26px] flex items-center justify-center gap-3 rounded-full bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 hover:border-emerald-500/40"
+                              className="w-[176px] h-[26px] flex items-center justify-center gap-3 rounded-full bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/20 hover:border-emerald-500/40"
                             >
                               <img
                                 src={icon}
