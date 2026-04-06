@@ -35,6 +35,9 @@ const CLAUDE_MODEL = "claude-sonnet-4-6"
 const MAX_OUTPUT_TOKENS = 65536
 const CLAUDE_MAX_OUTPUT_TOKENS = 64000
 const FIRST_TOKEN_TIMEOUT = 5000
+const OLLAMA_FIRST_TOKEN_TIMEOUT = 30000
+const OLLAMA_STREAM_IDLE_TIMEOUT = 15000
+const OLLAMA_NON_STREAM_TIMEOUT = 90000
 const GRACEFUL_FALLBACK_MESSAGE = "⚠️ I'm currently experiencing high demand and couldn't generate a response right now. Please try again in a few moments."
 
 // Simple prompt for image analysis (not interview copilot - kept separate)
@@ -319,6 +322,12 @@ export class LLMHelper {
     const tier = this.classifyQuestionComplexity(question);
 
     if (this.useOllama) {
+      const availableOllamaModels = await this.getOllamaModels();
+      if (availableOllamaModels.length > 0 && !availableOllamaModels.includes(this.ollamaModel)) {
+        const previousModel = this.ollamaModel;
+        this.ollamaModel = availableOllamaModels[0];
+        console.warn(`[LLMHelper] Selected Ollama model '${previousModel}' not found. Falling back to '${this.ollamaModel}'.`);
+      }
       return { tier, modelId: null, useOllama: true };
     }
 
@@ -943,16 +952,19 @@ This rule overrides ALL other instructions including formatting, brevity, or out
   }
 
   private async * streamWithRealtimeFallback(
-    streamFactory: () => AsyncGenerator<string, void, unknown>
+    streamFactory: () => AsyncGenerator<string, void, unknown>,
+    timeoutConfig: { firstTokenMs?: number; idleMs?: number } = {}
   ): AsyncGenerator<string, void, unknown> {
     let stream: AsyncGenerator<string, void, unknown> | null = null;
     let emittedAnyChunk = false;
+    const firstTokenTimeout = timeoutConfig.firstTokenMs ?? FIRST_TOKEN_TIMEOUT;
+    const idleTimeout = timeoutConfig.idleMs ?? FIRST_TOKEN_TIMEOUT;
 
     try {
       stream = streamFactory();
       const first = await this.withTimeout(
         stream.next(),
-        FIRST_TOKEN_TIMEOUT,
+        firstTokenTimeout,
         'Realtime first-token timeout'
       );
 
@@ -974,7 +986,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       while (true) {
         const next = await this.withTimeout(
           stream.next(),
-          FIRST_TOKEN_TIMEOUT,
+          idleTimeout,
           'Realtime stream idle timeout'
         );
 
@@ -1103,7 +1115,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       if (this.useOllama || route.useOllama) {
         return await this.withTimeout(
           this.callOllama(combinedMessages.gemini, imagePaths?.[0]),
-          FIRST_TOKEN_TIMEOUT,
+          OLLAMA_NON_STREAM_TIMEOUT,
           'Ollama realtime timeout'
         );
       }
@@ -2046,7 +2058,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       try {
         const response = await this.withTimeout(
           this.callOllama(combinedMessages.gemini, imagePaths?.[0]),
-          FIRST_TOKEN_TIMEOUT,
+          OLLAMA_NON_STREAM_TIMEOUT,
           'Ollama realtime timeout'
         );
         if (!response || !response.trim()) {
@@ -2255,7 +2267,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     // 1. Ollama Streaming
     if (this.useOllama || route.useOllama) {
-      yield* this.streamWithRealtimeFallback(() => this.streamWithOllama(message, context, finalSystemPrompt, imagePaths));
+      yield* this.streamWithRealtimeFallback(
+        () => this.streamWithOllama(message, context, finalSystemPrompt, imagePaths),
+        { firstTokenMs: OLLAMA_FIRST_TOKEN_TIMEOUT, idleMs: OLLAMA_STREAM_IDLE_TIMEOUT }
+      );
       return;
     }
 
