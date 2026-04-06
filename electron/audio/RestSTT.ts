@@ -15,6 +15,7 @@ import { EventEmitter } from 'events';
 import axios from 'axios';
 import FormData from 'form-data';
 import { RECOGNITION_LANGUAGES } from '../config/languages';
+import { resampleTo16kMonoLinear16 } from './Resampler';
 
 export type RestSttProvider = 'groq' | 'openai' | 'elevenlabs' | 'azure' | 'ibmwatson';
 
@@ -122,6 +123,7 @@ const MIN_BUFFER_BYTES = 4000;
 // This fires as a backstop if someone talks continuously for >10s without any pause,
 // preventing unbounded buffer growth and Whisper API timeouts.
 const SAFETY_NET_INTERVAL_MS = 10000;
+const TARGET_SAMPLE_RATE = 16000;
 
 // Silence threshold - if RMS is below this, skip the upload
 const SILENCE_RMS_THRESHOLD = 50;
@@ -286,16 +288,29 @@ export class RestSTT extends EventEmitter {
         // Concatenate all chunks
         const rawPcm = Buffer.concat(currentChunks);
 
+        // Normalize to canonical 16kHz mono PCM to keep provider billing predictable
+        // and make downstream language models see consistent audio quality.
+        let normalizedPcm = rawPcm;
+        let normalizedSampleRate = this.sampleRate;
+        let normalizedChannels = this.numChannels;
+        try {
+            normalizedPcm = Buffer.from(resampleTo16kMonoLinear16(rawPcm, this.sampleRate, this.numChannels));
+            normalizedSampleRate = TARGET_SAMPLE_RATE;
+            normalizedChannels = 1;
+        } catch (e) {
+            console.warn('[RestSTT] Resample failed, using raw PCM buffer', e);
+        }
+
         // Check for silence (skip upload if audio is too quiet)
-        if (this.isSilent(rawPcm)) {
+        if (this.isSilent(normalizedPcm)) {
             if (Math.random() < 0.1) {
-                console.log(`[RestSTT] Skipping silent buffer (${rawPcm.length} bytes)`);
+                console.log(`[RestSTT] Skipping silent buffer (${normalizedPcm.length} bytes)`);
             }
             return;
         }
 
         // Add WAV header
-        const wavBuffer = this.addWavHeader(rawPcm, this.sampleRate);
+        const wavBuffer = this.addWavHeader(normalizedPcm, normalizedSampleRate, normalizedChannels);
 
         this.isUploading = true;
 
@@ -407,7 +422,7 @@ export class RestSTT extends EventEmitter {
      * Add a WAV RIFF header to raw PCM data
      * Critical: Most REST STT APIs require a valid WAV file, NOT raw PCM
      */
-    private addWavHeader(samples: Buffer, sampleRate: number = 16000): Buffer {
+    private addWavHeader(samples: Buffer, sampleRate: number = 16000, channels: number = this.numChannels): Buffer {
         const buffer = Buffer.alloc(44 + samples.length);
         // RIFF chunk descriptor
         buffer.write('RIFF', 0);
@@ -417,10 +432,10 @@ export class RestSTT extends EventEmitter {
         buffer.write('fmt ', 12);
         buffer.writeUInt32LE(16, 16); // Subchunk1Size (16 for PCM)
         buffer.writeUInt16LE(1, 20);  // AudioFormat (1 = PCM)
-        buffer.writeUInt16LE(this.numChannels, 22);  // NumChannels
+        buffer.writeUInt16LE(channels, 22);  // NumChannels
         buffer.writeUInt32LE(sampleRate, 24); // SampleRate
-        buffer.writeUInt32LE(sampleRate * this.numChannels * (this.bitsPerSample / 8), 28); // ByteRate
-        buffer.writeUInt16LE(this.numChannels * (this.bitsPerSample / 8), 32); // BlockAlign
+        buffer.writeUInt32LE(sampleRate * channels * (this.bitsPerSample / 8), 28); // ByteRate
+        buffer.writeUInt16LE(channels * (this.bitsPerSample / 8), 32); // BlockAlign
         buffer.writeUInt16LE(this.bitsPerSample, 34); // BitsPerSample
         // data sub-chunk
         buffer.write('data', 36);

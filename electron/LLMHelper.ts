@@ -1442,14 +1442,14 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
-        const response = await this.withTimeout(
-          this.openaiClient.chat.completions.create({
+        const response = await this.withAbortControllerTimeout(
+          60000,
+          `OpenAI generation attempt ${attempt}`,
+          (signal) => this.openaiClient!.chat.completions.create({
             model,
             messages,
             max_completion_tokens: model.toLowerCase().includes('claude') ? CLAUDE_MAX_OUTPUT_TOKENS : MAX_OUTPUT_TOKENS,
-          }),
-          60000,
-          `OpenAI generation attempt ${attempt}`
+          }, { signal } as any)
         );
 
         return response.choices[0]?.message?.content || "";
@@ -1563,15 +1563,15 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
-        const response = await this.withTimeout(
-          this.claudeClient.messages.create({
+        const response = await this.withAbortControllerTimeout(
+          90000,
+          `Claude generation attempt ${attempt}`,
+          (signal) => this.claudeClient!.messages.create({
             model,
             max_tokens: CLAUDE_MAX_OUTPUT_TOKENS,
             ...(systemPrompt ? { system: systemPrompt } : {}),
             messages: [{ role: "user", content }],
-          }),
-          90000,
-          `Claude generation attempt ${attempt}`
+          }, { signal } as any)
         );
 
         const textBlock = response.content.find((block: any) => block.type === 'text') as any;
@@ -3150,6 +3150,26 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }),
       timeoutPromise
     ]);
+  }
+
+  private async withAbortControllerTimeout<T>(
+    timeoutMs: number,
+    operationName: string,
+    operation: (signal: AbortSignal) => Promise<T>
+  ): Promise<T> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      return await operation(controller.signal);
+    } catch (error: any) {
+      if (controller.signal.aborted) {
+        throw new Error(`${operationName} timed out after ${timeoutMs}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeoutId);
+    }
   }
 
   /**

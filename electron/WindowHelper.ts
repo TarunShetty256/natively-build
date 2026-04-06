@@ -40,6 +40,15 @@ export class WindowHelper {
   private currentX: number = 0
   private currentY: number = 0
 
+  // Windows can occasionally drop z-order after showInactive(); reassert always-on-top.
+  private reassertOverlayAlwaysOnTopOnWindows(): void {
+    if (process.platform !== 'win32' || !this.overlayWindow || this.overlayWindow.isDestroyed()) return;
+    setTimeout(() => {
+      if (!this.overlayWindow || this.overlayWindow.isDestroyed()) return;
+      this.overlayWindow.setAlwaysOnTop(true, "floating");
+    }, 0);
+  }
+
   constructor(appState: AppState) {
     this.appState = appState
   }
@@ -408,6 +417,7 @@ export class WindowHelper {
       } else {
         this.overlayWindow.showInactive();
       }
+      this.reassertOverlayAlwaysOnTopOnWindows();
     }
   }
 
@@ -483,6 +493,7 @@ export class WindowHelper {
         this.overlayWindow.setOpacity(0);
         if (inactive) this.overlayWindow.showInactive(); else this.overlayWindow.show();
         this.overlayWindow.setContentProtection(true);
+        this.reassertOverlayAlwaysOnTopOnWindows();
         // Small delay to ensure Windows DWM processes the flag before making it opaque
 
         if (this.opacityTimeout) clearTimeout(this.opacityTimeout);
@@ -496,6 +507,7 @@ export class WindowHelper {
       } else {
         this.overlayWindow.setContentProtection(this.contentProtection);
         if (inactive) this.overlayWindow.showInactive(); else this.overlayWindow.show();
+        this.reassertOverlayAlwaysOnTopOnWindows();
         // Only grab focus for explicit user-initiated shows (not shortcut/ghost shows)
         if (!inactive) this.overlayWindow.focus();
         // Do NOT re-assert setAlwaysOnTop on every show — it was set at creation time and
