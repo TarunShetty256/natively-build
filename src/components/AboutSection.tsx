@@ -4,6 +4,8 @@ import {
     Heart, Linkedin, Instagram, Mail, MicOff, Star, Bug, Globe, Sparkles, Zap
 } from 'lucide-react';
 import evinProfile from '../assets/evin.png';
+import iconImage from '../assets/icon.png';
+import iconQImage from '../assets/iconq.png';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
 import { getPlatformShortcut } from '../utils/platformUtils';
 
@@ -180,10 +182,10 @@ export const AboutSection: React.FC<AboutSectionProps> = () => {
                     {/* 0. Official Website */}
                     <div className="flex flex-wrap items-center gap-3">
                         <div className="w-12 h-12 rounded-full bg-bg-elevated border border-border-subtle flex items-center justify-center overflow-hidden shrink-0">
-                            <img src="src/assets/icon.png" alt="TeamSync Logo" width={60} />
+                            <img src={iconImage} alt="TeamSync Logo" width={60} />
                         </div>
                         <div className="w-12 h-12 rounded-full bg-bg-elevated border border-border-subtle flex items-center justify-center overflow-hidden shrink-0">
-                            <img src="src/assets/iconq.png" alt="TeamSync Logo" width={60} />
+                            <img src={iconQImage} alt="TeamSync Logo" width={60} />
                         </div>
                     </div>
                     {/* 1. Founder Profile */}
