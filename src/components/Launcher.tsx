@@ -31,7 +31,7 @@ import {
 import { generateMeetingPDF } from "../utils/pdfGenerator";
 import icon from "./icon.png";
 import mainui from "../UI_comp/mainui.png";
-import calender from "../UI_comp/calender.mp4";
+import calender from "../UI_comp/calender2.png";
 import ConnectCalendarButton from "./ui/ConnectCalendarButton";
 import MeetingDetails from "./MeetingDetails";
 import TopSearchPill from "./TopSearchPill";
@@ -1046,12 +1046,9 @@ const Launcher: React.FC<LauncherProps> = ({
                       <div className="md:col-span-1 rounded-xl overflow-hidden bg-bg-elevated relative group flex flex-col items-center pt-6 text-center">
                         {/* Backdrop Image */}
                         <div className="absolute inset-0 overflow-hidden">
-                          <video
+                          <img
                             src={calender}
-                            autoPlay
-                            loop
-                            muted
-                            playsInline
+                            alt="Calendar preview"
                             className="w-full h-full object-cover opacity-100 transition-opacity duration-500 translate-x--1 translate-y-[1px] scale-105"
                           />
                           <div className="absolute inset-0 bg-black/40" />
