@@ -12,10 +12,67 @@ import {
     extractLatestQuestionFromTurns, buildQuestionFocusedTranscriptWindow,
     classifyIntent
 } from './llm';
+import type { WhatToAnswerRequest } from './llm/WhatToAnswerLLM';
 
 // Mode types
 export type IntelligenceMode = 'idle' | 'assist' | 'what_to_say' | 'follow_up' | 'recap' | 'clarify' | 'manual' | 'follow_up_questions' | 'code_hint' | 'brainstorm';
 export type ConfidenceLevel = 'high' | 'medium' | 'low';
+export type Mode = 'answer' | 'behavioral' | 'system_design';
+
+interface KnowledgeContextBundle {
+    resume: string;
+    jobDescription: string;
+    company: string;
+    hasStructuredContext: boolean;
+}
+
+interface ModeGenerationResult {
+    answer: string;
+    aborted: boolean;
+}
+
+function detectMode(input: string): Mode {
+    const text = (input || '').toLowerCase();
+
+    const behavioralPattern = /tell me about a time|describe a situation|behavioral|conflict|failure|challenge|leadership|mentor|stakeholder|disagreement|difficult teammate|pressure/i;
+    if (behavioralPattern.test(text)) {
+        return 'behavioral';
+    }
+
+    const systemDesignPattern = /system design|design a|architecture|scalab|high[ -]?level design|throughput|latency|availability|reliability|fault tolerance|trade[- ]?off|distributed|microservice|capacity/i;
+    if (systemDesignPattern.test(text)) {
+        return 'system_design';
+    }
+
+    return 'answer';
+}
+
+function extractKeywordAnchors(text: string, maxKeywords: number = 12): string[] {
+    const blacklist = new Set([
+        'with', 'from', 'have', 'this', 'that', 'your', 'about', 'into', 'using',
+        'where', 'when', 'were', 'been', 'they', 'them', 'their', 'would', 'could',
+        'should', 'there', 'here', 'very', 'much', 'more', 'most', 'than', 'such'
+    ]);
+
+    const tokens = (text || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter(Boolean)
+        .filter(token => token.length >= 4)
+        .filter(token => !blacklist.has(token));
+
+    const unique: string[] = [];
+    const seen = new Set<string>();
+    for (const token of tokens) {
+        if (seen.has(token)) continue;
+        seen.add(token);
+        unique.push(token);
+        if (unique.length >= maxKeywords) break;
+    }
+
+    return unique;
+}
 
 // Refinement intent detection (refined to avoid false positives)
 function detectRefinementIntent(userText: string): { isRefinement: boolean; intent: string } {
@@ -109,6 +166,7 @@ export interface IntelligenceModeEvents {
     'manual_answer_started': () => void;
     'manual_answer_result': (answer: string, question: string) => void;
     'mode_changed': (mode: IntelligenceMode) => void;
+    'response_mode_changed': (mode: Mode) => void;
     'error': (error: Error, mode: IntelligenceMode) => void;
 }
 
@@ -135,6 +193,9 @@ export class IntelligenceEngine extends EventEmitter {
     private lastWhatToSayInputKey: string | null = null;
     private lastWhatToSayOutput: string | null = null;
     private lastWhatToSayTime: number = 0;
+
+    // User-selected deterministic response mode override.
+    private responseModeOverride: Mode | null = null;
 
     // Keep reference to LLMHelper for client access
     private llmHelper: LLMHelper;
@@ -164,6 +225,284 @@ export class IntelligenceEngine extends EventEmitter {
 
     getRecapLLM(): RecapLLM | null {
         return this.recapLLM;
+    }
+
+    setResponseModeOverride(mode: Mode | null): void {
+        this.responseModeOverride = mode;
+        this.emit('response_mode_changed', this.getResponseModeOverride());
+    }
+
+    getResponseModeOverride(): Mode {
+        return this.responseModeOverride || 'answer';
+    }
+
+    private getKnowledgeContextBundle(): KnowledgeContextBundle {
+        const fallbackResume = '[RESUME CONTEXT UNAVAILABLE]';
+        const fallbackJD = '[JOB DESCRIPTION CONTEXT UNAVAILABLE]';
+        const fallbackCompany = '[COMPANY CONTEXT UNAVAILABLE]';
+
+        const knowledgeOrchestrator = this.llmHelper.getKnowledgeOrchestrator?.();
+        const profileData = knowledgeOrchestrator?.getProfileData?.();
+        if (!profileData) {
+            return {
+                resume: fallbackResume,
+                jobDescription: fallbackJD,
+                company: fallbackCompany,
+                hasStructuredContext: false
+            };
+        }
+
+        const resumeData = {
+            identity: profileData.identity,
+            skills: (profileData.skills || []).slice(0, 15),
+            experience: (profileData.experience || []).slice(0, 5),
+            projects: (profileData.projects || []).slice(0, 4),
+            education: (profileData.education || []).slice(0, 3)
+        };
+
+        const jdData = profileData.activeJD
+            ? {
+                title: profileData.activeJD.title,
+                company: profileData.activeJD.company,
+                level: profileData.activeJD.level,
+                location: profileData.activeJD.location,
+                requirements: (profileData.activeJD.requirements || []).slice(0, 8),
+                technologies: (profileData.activeJD.technologies || []).slice(0, 10),
+                keywords: (profileData.activeJD.keywords || []).slice(0, 10)
+            }
+            : null;
+
+        const companyData = profileData.activeJD
+            ? {
+                company: profileData.activeJD.company,
+                role: profileData.activeJD.title,
+                cultureMappings: profileData.cultureMappings?.core_values || [],
+                negotiationRange: profileData.negotiationScript?.salary_range || null
+            }
+            : null;
+
+        return {
+            resume: JSON.stringify(resumeData),
+            jobDescription: jdData ? JSON.stringify(jdData) : fallbackJD,
+            company: companyData ? JSON.stringify(companyData) : fallbackCompany,
+            hasStructuredContext: !!profileData.identity
+        };
+    }
+
+    private isProviderFailureMessage(answer: string): boolean {
+        const normalized = (answer || '').trim().toLowerCase();
+        return normalized.includes('no ai provider') ||
+            normalized.includes('no ai providers configured') ||
+            normalized.includes('all ai services are currently unavailable');
+    }
+
+    private getRoutingCandidatesForMode(mode: Mode): string[] {
+        if (mode === 'answer') {
+            return ['llama', 'gpt-5.4'];
+        }
+        return ['gpt-5.4', 'llama'];
+    }
+
+    private canOverrideModel(modelId: string): boolean {
+        return /^(gpt-|o1-|o3-|claude-|gemini-|models\/|llama-|mixtral-|gemma-|allam-|qwen-|deepseek-|mistral-|compound-)/.test(modelId);
+    }
+
+    private async executeWithModeRouting(
+        mode: Mode,
+        operation: () => Promise<ModeGenerationResult>
+    ): Promise<ModeGenerationResult> {
+        const currentProvider = this.llmHelper.getCurrentProvider();
+        const originalModel = this.llmHelper.getCurrentModel();
+
+        if (currentProvider !== 'gemini' || !this.canOverrideModel(originalModel)) {
+            return operation();
+        }
+
+        const candidates = this.getRoutingCandidatesForMode(mode);
+        let lastResult: ModeGenerationResult = { answer: '', aborted: false };
+        let lastError: Error | null = null;
+
+        try {
+            for (const candidate of candidates) {
+                this.llmHelper.setModel(candidate);
+                try {
+                    const result = await operation();
+                    lastResult = result;
+
+                    if (result.aborted) {
+                        return result;
+                    }
+
+                    if (result.answer && !this.isProviderFailureMessage(result.answer)) {
+                        return result;
+                    }
+                } catch (error) {
+                    lastError = error as Error;
+                    console.warn(`[IntelligenceEngine] Mode route candidate failed (${candidate}): ${(error as Error).message}`);
+                }
+            }
+
+            if (lastError && !lastResult.answer) {
+                throw lastError;
+            }
+            return lastResult;
+        } finally {
+            this.llmHelper.setModel(originalModel);
+        }
+    }
+
+    private isWeakModeResponse(answer: string, mode: Mode, knowledgeContext: KnowledgeContextBundle): boolean {
+        const trimmed = (answer || '').trim();
+        if (trimmed.length < 24) return true;
+
+        const normalized = trimmed.toLowerCase();
+        if (mode === 'behavioral') {
+            const starSignals = ['situation', 'task', 'action', 'result'];
+            const starHits = starSignals.filter(signal => normalized.includes(signal)).length;
+            if (starHits < 2 && !/i\s+(led|owned|implemented|handled|delivered|resolved)/i.test(trimmed)) {
+                return true;
+            }
+        }
+
+        if (mode === 'system_design') {
+            const requiredSections = ['requirements', 'architecture', 'scaling', 'trade-offs'];
+            const sectionHits = requiredSections.filter(section => normalized.includes(section)).length;
+            if (sectionHits < 2) {
+                return true;
+            }
+        }
+
+        if (!knowledgeContext.hasStructuredContext) return false;
+
+        const anchors = [
+            ...extractKeywordAnchors(knowledgeContext.resume, 8),
+            ...extractKeywordAnchors(knowledgeContext.jobDescription, 8),
+            ...extractKeywordAnchors(knowledgeContext.company, 6)
+        ];
+
+        if (anchors.length === 0) return false;
+        const hits = anchors.filter(anchor => normalized.includes(anchor)).length;
+        return hits < 2;
+    }
+
+    private async generateModeAwareAnswer(
+        mode: Mode,
+        request: WhatToAnswerRequest,
+        generationId: number,
+        inferredQuestion: string,
+        confidence: number,
+        knowledgeContext: KnowledgeContextBundle,
+        imagePaths?: string[]
+    ): Promise<ModeGenerationResult> {
+        if (!this.whatToAnswerLLM) {
+            return { answer: '', aborted: false };
+        }
+
+        const modeRequest: WhatToAnswerRequest = {
+            ...request,
+            deterministicMode: mode,
+            enforceContextAnchors: true
+        };
+
+        const firstPass = await this.executeWithModeRouting(mode, async () => {
+            let fullAnswer = '';
+            const stream = this.whatToAnswerLLM!.generateStream(modeRequest, imagePaths);
+            let streamAborted = false;
+
+            for await (const token of stream) {
+                if (this.currentGenerationId !== generationId) {
+                    console.log('[IntelligenceEngine] _what_to_say stream aborted by new generation');
+                    await stream.return(undefined);
+                    streamAborted = true;
+                    break;
+                }
+                this.emit('suggested_answer_token', token, inferredQuestion, confidence);
+                fullAnswer += token;
+            }
+
+            return { answer: fullAnswer, aborted: streamAborted };
+        });
+
+        if (firstPass.aborted) {
+            return firstPass;
+        }
+
+        let finalAnswer = firstPass.answer;
+        if (this.isWeakModeResponse(finalAnswer, mode, knowledgeContext)) {
+            const retryRequest: WhatToAnswerRequest = {
+                ...modeRequest,
+                contextRetry: true,
+                forceVariation: true
+            };
+
+            const retryPass = await this.executeWithModeRouting(mode, async () => {
+                const retried = (await this.whatToAnswerLLM!.generate(retryRequest)).trim();
+                return { answer: retried, aborted: false };
+            });
+
+            if (retryPass.answer && !this.isProviderFailureMessage(retryPass.answer)) {
+                finalAnswer = retryPass.answer;
+            }
+        }
+
+        return { answer: finalAnswer, aborted: false };
+    }
+
+    private async handleSystemDesign(
+        request: WhatToAnswerRequest,
+        generationId: number,
+        inferredQuestion: string,
+        confidence: number,
+        knowledgeContext: KnowledgeContextBundle,
+        imagePaths?: string[]
+    ): Promise<ModeGenerationResult> {
+        return this.generateModeAwareAnswer(
+            'system_design',
+            request,
+            generationId,
+            inferredQuestion,
+            confidence,
+            knowledgeContext,
+            imagePaths
+        );
+    }
+
+    private async handleBehavioral(
+        request: WhatToAnswerRequest,
+        generationId: number,
+        inferredQuestion: string,
+        confidence: number,
+        knowledgeContext: KnowledgeContextBundle,
+        imagePaths?: string[]
+    ): Promise<ModeGenerationResult> {
+        return this.generateModeAwareAnswer(
+            'behavioral',
+            request,
+            generationId,
+            inferredQuestion,
+            confidence,
+            knowledgeContext,
+            imagePaths
+        );
+    }
+
+    private async handleAnswerMode(
+        request: WhatToAnswerRequest,
+        generationId: number,
+        inferredQuestion: string,
+        confidence: number,
+        knowledgeContext: KnowledgeContextBundle,
+        imagePaths?: string[]
+    ): Promise<ModeGenerationResult> {
+        return this.generateModeAwareAnswer(
+            'answer',
+            request,
+            generationId,
+            inferredQuestion,
+            confidence,
+            knowledgeContext,
+            imagePaths
+        );
     }
 
     // ============================================
@@ -402,26 +741,15 @@ export class IntelligenceEngine extends EventEmitter {
                 this.session.getAssistantResponseHistory().length
             );
 
-            const knowledgeOrchestrator = this.llmHelper.getKnowledgeOrchestrator?.();
-            const personaEnabled = !!knowledgeOrchestrator?.isKnowledgeMode?.();
-            const profileData = knowledgeOrchestrator?.getProfileData?.();
-            const resume = profileData
-                ? JSON.stringify({
-                    identity: profileData.identity,
-                    skills: profileData.skills,
-                    experience: (profileData.experience || []).slice(0, 5),
-                    projects: (profileData.projects || []).slice(0, 3),
-                    education: (profileData.education || []).slice(0, 2)
-                })
-                : '';
+            const detectedMode: Mode = this.responseModeOverride || (
+                intentResult.intent === 'behavioral'
+                    ? 'behavioral'
+                    : detectMode(resolvedQuestion || questionWindow)
+            );
 
-            console.log(`[IntelligenceEngine] Question-focused generation: intent=${intentResult.intent}, source=${extracted.source}${imagePaths?.length ? `, with ${imagePaths.length} image(s)` : ''}`);
+            const knowledgeContext = this.getKnowledgeContextBundle();
 
-            const generationId = ++this.currentGenerationId;
-            let fullAnswer = "";
-            // RC-03 fix: hold a reference to the generator so we can call .return()
-            // to properly terminate the network request when a new generation starts.
-            const stream = this.whatToAnswerLLM.generateStream({
+            const baseRequest: WhatToAnswerRequest = {
                 latestQuestion: resolvedQuestion || 'Please repeat the interviewer question clearly.',
                 transcriptWindow: questionWindow,
                 intentResult,
@@ -434,41 +762,61 @@ export class IntelligenceEngine extends EventEmitter {
                 relatedToPrevious,
                 forceVariation,
                 modeHint: 'what_to_say',
-                resume,
-                personaEnabled
-            }, imagePaths);
-            let streamAborted = false;
+                resume: knowledgeContext.resume,
+                jobDescription: knowledgeContext.jobDescription,
+                companyContext: knowledgeContext.company,
+                personaEnabled: true,
+                enforceContextAnchors: true
+            };
 
-            for await (const token of stream) {
-                if (this.currentGenerationId !== generationId) {
-                    console.log('[IntelligenceEngine] _what_to_say stream aborted by new generation');
-                    // RC-03 fix: .return() signals the generator to clean up and stops
-                    // the underlying network request (SDK generators honour this).
-                    await stream.return(undefined);
-                    streamAborted = true;
-                    break;
-                }
-                this.emit('suggested_answer_token', token, inferredQuestion, confidence);
-                fullAnswer += token;
+            console.log(`[IntelligenceEngine] Question-focused generation: intent=${intentResult.intent}, mode=${detectedMode}, source=${extracted.source}${imagePaths?.length ? `, with ${imagePaths.length} image(s)` : ''}`);
+
+            const generationId = ++this.currentGenerationId;
+            let fullAnswer = '';
+            let modeResult: ModeGenerationResult;
+
+            if (detectedMode === 'system_design') {
+                modeResult = await this.handleSystemDesign(
+                    baseRequest,
+                    generationId,
+                    inferredQuestion,
+                    confidence,
+                    knowledgeContext,
+                    imagePaths
+                );
+            } else if (detectedMode === 'behavioral') {
+                modeResult = await this.handleBehavioral(
+                    baseRequest,
+                    generationId,
+                    inferredQuestion,
+                    confidence,
+                    knowledgeContext,
+                    imagePaths
+                );
+            } else {
+                modeResult = await this.handleAnswerMode(
+                    baseRequest,
+                    generationId,
+                    inferredQuestion,
+                    confidence,
+                    knowledgeContext,
+                    imagePaths
+                );
             }
 
-            if (streamAborted) {
+            if (modeResult.aborted) {
                 // Aborted mid-stream — don't update session or emit final event
                 this.setMode('idle');
                 return null;
             }
 
+            fullAnswer = modeResult.answer;
+
             if (!fullAnswer || fullAnswer.trim().length < 5) {
                 fullAnswer = "Could you repeat that? I want to make sure I address your question properly.";
             }
 
-            const normalizedAnswer = fullAnswer.trim().toLowerCase();
-            const providerUnavailableMessage =
-                normalizedAnswer.includes('no ai provider') ||
-                normalizedAnswer.includes('no ai providers configured') ||
-                normalizedAnswer.includes('all ai services are currently unavailable');
-
-            if (providerUnavailableMessage) {
+            if (this.isProviderFailureMessage(fullAnswer)) {
                 this.emit('error', new Error(fullAnswer), 'what_to_say');
                 this.setMode('idle');
                 return null;

@@ -100,6 +100,8 @@ interface ElectronAPI {
   generateRecap: () => Promise<{ summary: string | null }>
   submitManualQuestion: (question: string) => Promise<{ answer: string | null; question: string }>
   getIntelligenceContext: () => Promise<{ context: string; lastAssistantMessage: string | null; activeMode: string }>
+  setIntelligenceResponseMode: (mode: 'answer' | 'behavioral' | 'system_design') => Promise<{ success: boolean; mode?: 'answer' | 'behavioral' | 'system_design'; error?: string }>
+  getIntelligenceResponseMode: () => Promise<{ mode: 'answer' | 'behavioral' | 'system_design' }>
   resetIntelligence: () => Promise<{ success: boolean; error?: string }>
 
   // Meeting Lifecycle
@@ -122,6 +124,7 @@ interface ElectronAPI {
   onIntelligenceManualStarted: (callback: () => void) => () => void
   onIntelligenceManualResult: (callback: (data: { answer: string; question: string }) => void) => () => void
   onIntelligenceModeChanged: (callback: (data: { mode: string }) => void) => () => void
+  onIntelligenceResponseModeChanged: (callback: (data: { mode: 'answer' | 'behavioral' | 'system_design' }) => void) => () => void
   onIntelligenceError: (callback: (data: { error: string; mode: string }) => void) => () => void
 
   // Model Management
@@ -596,6 +599,8 @@ contextBridge.exposeInMainWorld("electronAPI", {
   generateRecap: () => ipcRenderer.invoke("generate-recap"),
   submitManualQuestion: (question: string) => ipcRenderer.invoke("submit-manual-question", question),
   getIntelligenceContext: () => ipcRenderer.invoke("get-intelligence-context"),
+  setIntelligenceResponseMode: (mode: 'answer' | 'behavioral' | 'system_design') => ipcRenderer.invoke("set-intelligence-response-mode", mode),
+  getIntelligenceResponseMode: () => ipcRenderer.invoke("get-intelligence-response-mode"),
   resetIntelligence: () => ipcRenderer.invoke("reset-intelligence"),
 
   // Action Button Mode (Dynamic Recap / Brainstorm toggle)
@@ -725,6 +730,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on("intelligence-mode-changed", subscription)
     return () => {
       ipcRenderer.removeListener("intelligence-mode-changed", subscription)
+    }
+  },
+  onIntelligenceResponseModeChanged: (callback: (data: { mode: 'answer' | 'behavioral' | 'system_design' }) => void) => {
+    const subscription = (_: any, data: any) => callback(data)
+    ipcRenderer.on("intelligence-response-mode-changed", subscription)
+    return () => {
+      ipcRenderer.removeListener("intelligence-response-mode-changed", subscription)
     }
   },
   onIntelligenceError: (callback: (data: { error: string; mode: string }) => void) => {

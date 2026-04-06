@@ -1795,6 +1795,21 @@ export function initializeIpcHandlers(appState: AppState): void {
     }
   });
 
+  safeHandle("set-intelligence-response-mode", async (_, mode: 'answer' | 'behavioral' | 'system_design') => {
+    try {
+      const intelligenceManager = appState.getIntelligenceManager();
+      intelligenceManager.setResponseModeOverride(mode);
+      return { success: true, mode: intelligenceManager.getResponseModeOverride() };
+    } catch (error: any) {
+      return { success: false, error: error.message };
+    }
+  });
+
+  safeHandle("get-intelligence-response-mode", async () => {
+    const intelligenceManager = appState.getIntelligenceManager();
+    return { mode: intelligenceManager.getResponseModeOverride() };
+  });
+
   safeHandle("generate-clarify", async () => {
     try {
       const intelligenceManager = appState.getIntelligenceManager();

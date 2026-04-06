@@ -15,8 +15,13 @@ export interface WhatToAnswerRequest {
     relatedToPrevious?: boolean;
     forceVariation?: boolean;
     modeHint?: 'what_to_say' | 'answer';
+    deterministicMode?: 'answer' | 'behavioral' | 'system_design';
     resume?: string | null;
+    jobDescription?: string | null;
+    companyContext?: string | null;
     personaEnabled?: boolean;
+    enforceContextAnchors?: boolean;
+    contextRetry?: boolean;
 }
 
 export class WhatToAnswerLLM {
@@ -48,7 +53,10 @@ export class WhatToAnswerLLM {
 
             const transcriptSummary = (request.transcriptWindow || '').trim();
             const resume = (request.resume || '').trim();
+            const jobDescription = (request.jobDescription || '').trim();
+            const companyContext = (request.companyContext || '').trim();
             const personaEnabled = !!request.personaEnabled;
+            const deterministicMode = request.deterministicMode || 'answer';
 
             // Build RECENT MESSAGES block (short-term memory first)
             const recentMessageLines: string[] = [];
@@ -66,7 +74,7 @@ export class WhatToAnswerLLM {
 
             // Build KEY FACTS block (structured candidate data)
             let keyFactsBlock = '';
-            if (personaEnabled && resume) {
+            if (resume) {
                 try {
                     const parsed = JSON.parse(resume);
                     const identity = parsed?.identity ? JSON.stringify(parsed.identity) : '';
@@ -88,6 +96,26 @@ export class WhatToAnswerLLM {
                     keyFactsBlock = keyFactParts.join('\n\n');
                 } catch {
                     keyFactsBlock = resume;
+                }
+            }
+
+            let jdBlock = '';
+            if (jobDescription) {
+                try {
+                    const parsed = JSON.parse(jobDescription);
+                    jdBlock = JSON.stringify(parsed);
+                } catch {
+                    jdBlock = jobDescription;
+                }
+            }
+
+            let companyBlock = '';
+            if (companyContext) {
+                try {
+                    const parsed = JSON.parse(companyContext);
+                    companyBlock = JSON.stringify(parsed);
+                } catch {
+                    companyBlock = companyContext;
                 }
             }
 
@@ -116,6 +144,14 @@ ${keyFactsBlock.slice(0, 5000)}
 </key_facts>`);
             }
 
+            contextParts.push(`<job_description>
+${jdBlock ? jdBlock.slice(0, 5000) : '[JOB DESCRIPTION CONTEXT UNAVAILABLE]'}
+</job_description>`);
+
+            contextParts.push(`<company_context>
+${companyBlock ? companyBlock.slice(0, 4000) : '[COMPANY CONTEXT UNAVAILABLE]'}
+</company_context>`);
+
             if (recentMessageLines.length > 0) {
                 contextParts.push(`<recent_messages>
 ${recentMessageLines.join('\n').slice(0, 5000)}
@@ -136,6 +172,46 @@ Every answer must include at least one concrete anchor from available context:
 
 If the question is about skills, strengths, or challenges, tie it directly to a concrete project from KEY FACTS.
 </critical_rules>`);
+            contextParts.push(`<deterministic_mode>
+ACTIVE RESPONSE MODE: ${deterministicMode}
+</deterministic_mode>`);
+
+            if (deterministicMode === 'behavioral') {
+                contextParts.push(`<behavioral_answer_rules>
+Use explicit STAR format with 4 short parts in order:
+Situation:
+Task:
+Action:
+Result:
+
+Keep each part concise and grounded in resume/JD/company context.
+</behavioral_answer_rules>`);
+            }
+
+            if (deterministicMode === 'system_design') {
+                contextParts.push(`<system_design_rules>
+Use this exact structure with short section headers:
+Requirements:
+Architecture:
+Scaling:
+Trade-offs:
+
+Prioritize practical design aligned with JD/company context.
+</system_design_rules>`);
+            }
+
+            if (request.enforceContextAnchors) {
+                contextParts.push(`<context_enforcement>
+You MUST reference at least one resume anchor and one JD/company anchor when available.
+If context is missing, state that briefly and continue with the best grounded answer.
+</context_enforcement>`);
+            }
+
+            if (request.contextRetry) {
+                contextParts.push(`<retry_note>
+Previous answer was too generic. Rewrite with stronger contextual grounding and concrete specifics.
+</retry_note>`);
+            }
             contextParts.push(`<interview_style>
 You are a high-performing candidate interviewing at a top tech company.
 Answer as if you are speaking live in the interview.

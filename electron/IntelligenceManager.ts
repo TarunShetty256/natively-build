@@ -53,7 +53,7 @@ export class IntelligenceManager extends EventEmitter {
             'recap', 'recap_token', 'clarify', 'clarify_token',
             'follow_up_questions_update', 'follow_up_questions_token',
             'manual_answer_started', 'manual_answer_result',
-            'mode_changed', 'error'
+            'mode_changed', 'response_mode_changed', 'error'
         ];
 
         for (const event of events) {
@@ -190,6 +190,14 @@ export class IntelligenceManager extends EventEmitter {
 
     getActiveMode() {
         return this.engine.getActiveMode();
+    }
+
+    setResponseModeOverride(mode: import('./IntelligenceEngine').Mode | null): void {
+        this.engine.setResponseModeOverride(mode);
+    }
+
+    getResponseModeOverride(): import('./IntelligenceEngine').Mode {
+        return this.engine.getResponseModeOverride();
     }
 
     setMode(mode: import('./IntelligenceEngine').IntelligenceMode): void {

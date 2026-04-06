@@ -129,6 +129,8 @@ export interface ElectronAPI {
   generateRecap: () => Promise<{ summary: string | null }>
   submitManualQuestion: (question: string) => Promise<{ answer: string | null; question: string }>
   getIntelligenceContext: () => Promise<{ context: string; lastAssistantMessage: string | null; activeMode: string }>
+  setIntelligenceResponseMode: (mode: 'answer' | 'behavioral' | 'system_design') => Promise<{ success: boolean; mode?: 'answer' | 'behavioral' | 'system_design'; error?: string }>
+  getIntelligenceResponseMode: () => Promise<{ mode: 'answer' | 'behavioral' | 'system_design' }>
   resetIntelligence: () => Promise<{ success: boolean; error?: string }>
 
   // Dynamic Action Button Mode
@@ -162,6 +164,7 @@ export interface ElectronAPI {
   onIntelligenceManualStarted: (callback: () => void) => () => void
   onIntelligenceManualResult: (callback: (data: { answer: string; question: string }) => void) => () => void
   onIntelligenceModeChanged: (callback: (data: { mode: string }) => void) => () => void
+  onIntelligenceResponseModeChanged: (callback: (data: { mode: 'answer' | 'behavioral' | 'system_design' }) => void) => () => void
   onIntelligenceError: (callback: (data: { error: string, mode: string }) => void) => () => void;
   // Session Management
   onSessionReset: (callback: () => void) => () => void;

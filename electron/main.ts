@@ -1523,6 +1523,13 @@ export class AppState {
       }
     })
 
+    this.intelligenceManager.on('response_mode_changed', (mode: string) => {
+      const win = mainWindow()
+      if (win) {
+        win.webContents.send('intelligence-response-mode-changed', { mode })
+      }
+    })
+
     this.intelligenceManager.on('error', (error: Error, mode: string) => {
       console.error(`[IntelligenceManager] Error in ${mode}:`, error)
       const win = mainWindow()
