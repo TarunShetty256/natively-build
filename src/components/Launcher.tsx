@@ -819,7 +819,7 @@ const Launcher: React.FC<LauncherProps> = ({
                                 className="w-[35px] h-[35px] object-contain brightness-0 invert drop-shadow-[0_1px_2px_rgba(0,0,0,0.1)] opacity-100"
                               />
                               <span className="drop-shadow-[0_1px_1px_rgba(0,0,0,0.1)] text-[20px] leading-none">
-                                Start TeamSync
+                                Meeting Ongoing
                               </span>
                             </motion.div>
                           ) : (

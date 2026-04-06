@@ -318,6 +318,14 @@ export class LLMHelper {
     const question = this.extractRoutingQuestion(rawMessage, context);
     const tier = this.classifyQuestionComplexity(question);
 
+    if (this.useOllama) {
+      return { tier, modelId: null, useOllama: true };
+    }
+
+    if (this.currentModelId && this.isModelCallable(this.currentModelId, isMultimodal)) {
+      return { tier, modelId: this.currentModelId, useOllama: false };
+    }
+
     const defaultModel = this.currentModelId;
     const fastGroq = this.getTieredModelSafely(TextModelFamily.GROQ, GROQ_MODEL);
     const fastGemini = this.getTieredModelSafely(TextModelFamily.GEMINI_FLASH, GEMINI_FLASH_MODEL);
@@ -2626,22 +2634,41 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         })
       });
 
+      if (!response.ok) {
+        const errText = await response.text().catch(() => "");
+        throw new Error(`Ollama API error: ${response.status} ${response.statusText}${errText ? ` - ${errText}` : ""}`);
+      }
+
       if (!response.body) throw new Error("No response body from Ollama");
 
-      // iterate over the readable stream
+      const decoder = new TextDecoder();
+      let buffer = "";
+
       // @ts-ignore
       for await (const chunk of response.body) {
-        const text = new TextDecoder().decode(chunk);
-        // Ollama sends JSON objects per line
-        const lines = text.split('\n').filter(l => l.trim());
+        buffer += decoder.decode(chunk, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || "";
+
         for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
           try {
-            const json = JSON.parse(line);
+            const json = JSON.parse(trimmed);
             if (json.response) yield json.response;
             if (json.done) return;
-          } catch (e) {
-            // ignore partial json
+          } catch {
+            // Keep parsing other lines; partials are handled via buffer.
           }
+        }
+      }
+
+      if (buffer.trim()) {
+        try {
+          const json = JSON.parse(buffer.trim());
+          if (json.response) yield json.response;
+        } catch {
+          // ignore trailing partial
         }
       }
     } catch (e) {

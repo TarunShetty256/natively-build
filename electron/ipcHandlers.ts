@@ -1542,6 +1542,10 @@ export function initializeIpcHandlers(appState: AppState): void {
 
       llmHelper.setModel(modelId, allProviders);
 
+      // Ensure model change takes effect immediately during active meetings.
+      appState.getIntelligenceManager().resetEngine();
+      appState.getIntelligenceManager().initializeLLMs();
+
       // Close the selector window if open
       appState.modelSelectorWindowHelper.hideWindow();
 
@@ -1578,6 +1582,10 @@ export function initializeIpcHandlers(appState: AppState): void {
       const legacyProviders = cm.getCustomProviders() || [];
       const allProviders = [...curlProviders, ...legacyProviders];
       llmHelper.setModel(modelId, allProviders);
+
+      // Ensure runtime switching is immediate even if a meeting is in progress.
+      appState.getIntelligenceManager().resetEngine();
+      appState.getIntelligenceManager().initializeLLMs();
 
       // Close the selector window if open
       appState.modelSelectorWindowHelper.hideWindow();
