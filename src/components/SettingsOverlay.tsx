@@ -14,6 +14,7 @@ import { AIProvidersSettings } from './settings/AIProvidersSettings';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useShortcuts } from '../hooks/useShortcuts';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
+import { Toast, ToastDescription, ToastMessage, ToastTitle, ToastVariant } from './ui/toast';
 import {
     clampOverlayOpacity,
     getOverlayAppearance,
@@ -419,10 +420,22 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
     const [negotiationScript, setNegotiationScript] = useState<any>(null);
     const [negotiationGenerating, setNegotiationGenerating] = useState(false);
     const [negotiationError, setNegotiationError] = useState('');
+    const [toastOpen, setToastOpen] = useState(false);
+    const [toastMessage, setToastMessage] = useState<ToastMessage>({
+        title: '',
+        description: '',
+        variant: 'neutral'
+    });
     const [verboseLogging, setVerboseLogging] = useState(false);
     const aotPollRef = useRef<number | null>(null);
     const AOT_POLL_INTERVAL_MS = 2000;
     const AOT_POLL_MAX_ATTEMPTS = 180;
+    const COMPANY_RESEARCH_TIMEOUT_MS = 15000;
+
+    const showToast = (title: string, description: string, variant: ToastVariant = 'neutral') => {
+        setToastMessage({ title, description, variant });
+        setToastOpen(true);
+    };
 
     const refreshProfileData = async () => {
         const data = await window.electronAPI?.profileGetProfile?.();
@@ -2210,14 +2223,53 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                                                     <button
                                                         onClick={async () => {
                                                             setCompanyResearching(true);
+                                                            const companyName = profileData?.activeJD?.company;
+                                                            const researchPromise = window.electronAPI?.profileResearchCompany?.(companyName);
+
+                                                            if (!researchPromise) {
+                                                                showToast('Research unavailable', 'Company research service is not available right now.', 'error');
+                                                                setCompanyResearching(false);
+                                                                return;
+                                                            }
+
+                                                            let timeoutId: number | undefined;
+                                                            const timeoutPromise = new Promise<null>((resolve) => {
+                                                                timeoutId = window.setTimeout(() => resolve(null), COMPANY_RESEARCH_TIMEOUT_MS);
+                                                            });
+
                                                             try {
-                                                                const result = await window.electronAPI?.profileResearchCompany?.(profileData.activeJD.company);
+                                                                const raced = await Promise.race([researchPromise, timeoutPromise]);
+                                                                if (raced === null) {
+                                                                    showToast(
+                                                                        'Research timed out',
+                                                                        'Company research took more than 15 seconds. Keeping current data and continuing in background.',
+                                                                        'neutral'
+                                                                    );
+                                                                    researchPromise
+                                                                        .then((lateResult: any) => {
+                                                                            if (lateResult?.success && lateResult.dossier) {
+                                                                                setCompanyDossier(lateResult.dossier);
+                                                                            }
+                                                                        })
+                                                                        .catch(() => {
+                                                                            // Ignore late failures after timeout fallback.
+                                                                        });
+                                                                    return;
+                                                                }
+
+                                                                const result = raced as any;
                                                                 if (result?.success && result.dossier) {
                                                                     setCompanyDossier(result.dossier);
+                                                                } else {
+                                                                    showToast('Research failed', result?.error || 'Could not fetch company research.', 'error');
                                                                 }
                                                             } catch (e) {
                                                                 console.error('Research failed:', e);
+                                                                showToast('Research failed', (e as any)?.message || 'Unexpected error while fetching research.', 'error');
                                                             } finally {
+                                                                if (timeoutId !== undefined) {
+                                                                    window.clearTimeout(timeoutId);
+                                                                }
                                                                 setCompanyResearching(false);
                                                             }
                                                         }}
@@ -3336,6 +3388,16 @@ const SettingsOverlay: React.FC<SettingsOverlayProps> = ({ isOpen, onClose, init
                     setProfileStatus(prev => ({ ...prev, profileMode: false }));
                 }}
             />
+
+            <Toast
+                open={toastOpen}
+                onOpenChange={setToastOpen}
+                variant={toastMessage.variant}
+                duration={4500}
+            >
+                <ToastTitle>{toastMessage.title}</ToastTitle>
+                <ToastDescription>{toastMessage.description}</ToastDescription>
+            </Toast>
 
             {/* ------------------------------------------------------------------ */}
             {/* Live Preview — mockup sits below the z-50 modal                    */}
