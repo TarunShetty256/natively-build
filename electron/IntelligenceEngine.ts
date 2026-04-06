@@ -945,26 +945,70 @@ export class IntelligenceEngine extends EventEmitter {
                 return "Please configure your API Keys in Settings to use this feature.";
             }
 
-            let context = this.session.getFormattedContext(180);
             const state = this.stateManager.getState();
             const contextItems = this.session.getContext(180);
+
+            // Keep brainstorm focused on the active interview turn by including interim
+            // interviewer text when available and avoiding assistant echo context.
+            const lastInterim = this.session.getLastInterimInterviewer();
+            if (lastInterim && lastInterim.text.trim().length > 0) {
+                const lastItem = contextItems[contextItems.length - 1];
+                const isDuplicate = lastItem &&
+                    lastItem.role === 'interviewer' &&
+                    (lastItem.text === lastInterim.text || Math.abs(lastItem.timestamp - lastInterim.timestamp) < 1000);
+
+                if (!isDuplicate) {
+                    contextItems.push({
+                        role: 'interviewer',
+                        text: lastInterim.text,
+                        timestamp: lastInterim.timestamp
+                    });
+                }
+            }
+
             const transcriptTurns = contextItems.map(item => ({
                 role: item.role,
                 text: item.text,
                 timestamp: item.timestamp
             }));
+
+            const nonAssistantTurns = transcriptTurns.filter(turn => turn.role !== 'assistant');
             const extracted = extractLatestQuestionFromTurns(
-                transcriptTurns,
-                this.session.getLastInterimInterviewer()?.text || null
+                nonAssistantTurns,
+                lastInterim?.text || null
             );
+            const transcriptWindow = buildQuestionFocusedTranscriptWindow(nonAssistantTurns, 10);
+
+            const isGenericFallbackQuestion =
+                extracted.source === 'fallback' &&
+                /tell me about your most recent project/i.test(extracted.question);
+
+            const extractedQuestion = isGenericFallbackQuestion ? null : extracted.question;
+            const detectedQuestion = this.session.getDetectedCodingQuestion().question?.trim() || null;
 
             // Prepend a specific problem/question so brainstorm mode stays focused.
-            const resolvedProblem = problemStatement?.trim() ||
-                this.session.getDetectedCodingQuestion().question?.trim() ||
+            const resolvedProblem =
+                problemStatement?.trim() ||
+                extractedQuestion ||
+                detectedQuestion ||
                 state.lastQuestion ||
-                extracted.question;
+                null;
 
-            if (!context.trim() && !resolvedProblem && (!imagePaths || imagePaths.length === 0)) {
+            let context = '';
+            if (resolvedProblem) {
+                this.stateManager.setLastQuestion(resolvedProblem);
+                context += `<problem_statement>\n${resolvedProblem}\n</problem_statement>\n`;
+            }
+
+            if (transcriptWindow.trim()) {
+                context += `\n<recent_transcript>\n${transcriptWindow}\n</recent_transcript>\n`;
+            }
+
+            if (!context.trim() && imagePaths && imagePaths.length > 0) {
+                context = `<recent_transcript>\n[No usable transcript found. Infer the problem from the attached screenshot(s).]\n</recent_transcript>`;
+            }
+
+            if (!context.trim() && (!imagePaths || imagePaths.length === 0)) {
                 this.setMode('idle');
                 const msg = "There's nothing to brainstorm right now. Make sure your question is visible or spoken aloud, then try again.";
                 this.session.addAssistantMessage(msg);
@@ -972,10 +1016,6 @@ export class IntelligenceEngine extends EventEmitter {
                 return msg;
             }
 
-            if (resolvedProblem) {
-                this.stateManager.setLastQuestion(resolvedProblem);
-                context = `<problem_statement>\n${resolvedProblem}\n</problem_statement>\n\n${context}`;
-            }
             const generationId = ++this.currentGenerationId;
             let fullResult = "";
             const stream = this.brainstormLLM.generateStream(context, imagePaths);
