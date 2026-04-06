@@ -73,7 +73,7 @@ export class CalendarManager extends EventEmitter {
                         }
 
                         if (code) {
-                            res.end('Authentication successful! You can close this window and return to Natively.');
+                            res.end('Authentication successful! You can close this window and return to TeamSync app.');
                             server.close();
 
                             // 2. Exchange code for tokens

@@ -90,6 +90,110 @@ export class CompanyResearchEngine {
         return Number.isFinite(n) ? n : 0;
     }
 
+    private clampRating(value: any): number {
+        const n = this.toNumber(value);
+        if (n <= 0) return 0;
+        if (n > 5) return 5;
+        return Math.round(n * 10) / 10;
+    }
+
+    private normalizeCultureRatings(value: any, fallbackSources: string[] = []): any {
+        if (!value || typeof value !== 'object') return undefined;
+
+        const ratings = {
+            overall: this.clampRating(value?.overall),
+            work_life_balance: this.clampRating(value?.work_life_balance),
+            career_growth: this.clampRating(value?.career_growth),
+            compensation: this.clampRating(value?.compensation),
+            management: this.clampRating(value?.management),
+            diversity: this.clampRating(value?.diversity),
+            review_count: this.toString(value?.review_count),
+            data_sources: this.toStringArray(value?.data_sources)
+        };
+
+        if (ratings.data_sources.length === 0 && fallbackSources.length > 0) {
+            ratings.data_sources = fallbackSources.slice(0, 3);
+        }
+
+        const hasNumeric = [
+            ratings.overall,
+            ratings.work_life_balance,
+            ratings.career_growth,
+            ratings.compensation,
+            ratings.management,
+            ratings.diversity
+        ].some(n => n > 0);
+
+        if (!hasNumeric && !ratings.review_count && ratings.data_sources.length === 0) {
+            return undefined;
+        }
+
+        return ratings;
+    }
+
+    private hasCultureData(value: any): boolean {
+        if (!value || typeof value !== 'object') return false;
+        const ratings = [
+            this.toNumber(value?.overall),
+            this.toNumber(value?.work_life_balance),
+            this.toNumber(value?.career_growth),
+            this.toNumber(value?.compensation),
+            this.toNumber(value?.management),
+            this.toNumber(value?.diversity)
+        ];
+        const hasRatings = ratings.some(n => n > 0);
+        const hasMeta = !!this.toString(value?.review_count) || this.toStringArray(value?.data_sources).length > 0;
+        return hasRatings || hasMeta;
+    }
+
+    private nonEmptyString(preferred: string, fallback: string): string {
+        return preferred && preferred.trim().length > 0 ? preferred : fallback;
+    }
+
+    private mergeDossiers(base: CompanyDossier, incoming: CompanyDossier): CompanyDossier {
+        const mergedSources = Array.from(new Set([...(incoming.sources || []), ...(base.sources || [])])).filter(Boolean);
+        return {
+            ...base,
+            company: this.nonEmptyString(incoming.company, base.company),
+            hiring_strategy: this.nonEmptyString(incoming.hiring_strategy, base.hiring_strategy),
+            interview_focus: this.nonEmptyString(incoming.interview_focus, base.interview_focus),
+            interview_difficulty: incoming.interview_difficulty || base.interview_difficulty,
+            core_values: incoming.core_values && incoming.core_values.length > 0 ? incoming.core_values : base.core_values,
+            salary_estimates: incoming.salary_estimates && incoming.salary_estimates.length > 0 ? incoming.salary_estimates : base.salary_estimates,
+            culture_ratings: this.hasCultureData(incoming.culture_ratings) ? incoming.culture_ratings : base.culture_ratings,
+            employee_reviews: incoming.employee_reviews && incoming.employee_reviews.length > 0 ? incoming.employee_reviews : base.employee_reviews,
+            critics: incoming.critics && incoming.critics.length > 0 ? incoming.critics : base.critics,
+            benefits: incoming.benefits && incoming.benefits.length > 0 ? incoming.benefits : base.benefits,
+            competitors: incoming.competitors && incoming.competitors.length > 0 ? incoming.competitors : base.competitors,
+            recent_news: this.nonEmptyString(incoming.recent_news, base.recent_news),
+            sources: mergedSources,
+            fetched_at: this.nonEmptyString(incoming.fetched_at, base.fetched_at)
+        };
+    }
+
+    private isLikelyStructuredDossier(candidate: any, expectedCompany: string): boolean {
+        if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate)) return false;
+
+        const signalCount = [
+            this.toString(candidate?.hiring_strategy).length > 20,
+            this.toString(candidate?.interview_focus).length > 20,
+            Array.isArray(candidate?.salary_estimates) && candidate.salary_estimates.length > 0,
+            this.hasCultureData(candidate?.culture_ratings),
+            Array.isArray(candidate?.employee_reviews) && candidate.employee_reviews.length > 0,
+            Array.isArray(candidate?.critics) && candidate.critics.length > 0,
+            Array.isArray(candidate?.benefits) && candidate.benefits.length > 0,
+            Array.isArray(candidate?.competitors) && candidate.competitors.length > 0,
+            this.toString(candidate?.recent_news).length > 20,
+            Array.isArray(candidate?.sources) && candidate.sources.length > 0
+        ].filter(Boolean).length;
+
+        const candidateCompany = this.toString(candidate?.company).toLowerCase();
+        const expected = this.toString(expectedCompany).toLowerCase();
+        const companyLooksValid = !candidateCompany || !expected || candidateCompany.includes(expected) || expected.includes(candidateCompany);
+
+        return companyLooksValid && signalCount >= 3;
+    }
+
     private normalizeDossier(company: string, data: any): CompanyDossier {
         const salaryEstimates = Array.isArray(data?.salary_estimates) ? data.salary_estimates : [];
         // Normalize competitors: accept arrays or comma/newline/semicolon-separated strings
@@ -143,6 +247,8 @@ export class CompanyResearchEngine {
             }))
             .filter((r: any) => r.quote && r.quote.length > 0);
 
+        const normalizedSources = this.toStringArray(data?.sources);
+
         return {
             company: this.toString(data?.company) || company,
             hiring_strategy: this.toString(data?.hiring_strategy),
@@ -156,15 +262,15 @@ export class CompanyResearchEngine {
                 max: this.toNumber(s?.max),
                 currency: this.toString(s?.currency) || 'USD',
                 source: this.toString(s?.source),
-                confidence: s?.confidence || 'low'
+                confidence: ['low', 'medium', 'high'].includes(this.toString(s?.confidence)) ? this.toString(s?.confidence) : 'low'
             })).filter((s: any) => s.title || s.min || s.max),
-            culture_ratings: data?.culture_ratings,
+            culture_ratings: this.normalizeCultureRatings(data?.culture_ratings, normalizedSources),
             employee_reviews: employeeReviews,
             critics: Array.isArray(data?.critics) ? data.critics : [],
             benefits: this.toStringArray(data?.benefits),
             competitors: competitors,
             recent_news: this.toString(data?.recent_news),
-            sources: this.toStringArray(data?.sources),
+            sources: normalizedSources,
             fetched_at: this.toString(data?.fetched_at) || new Date().toISOString()
         };
     }
@@ -220,14 +326,14 @@ export class CompanyResearchEngine {
         const sourceList = Array.from(uniqueSources.values()).slice(0, 10);
         const hasSources = sourceList.length > 0;
 
-        // If the search provider returned a source that already contains structured JSON
-        // matching the dossier schema, accept it directly and skip LLM generation.
+        // If the search provider returned a strong, schema-matching dossier JSON,
+        // accept it directly; otherwise continue with LLM synthesis to avoid sparse data.
         if (hasSources) {
             for (const src of sourceList) {
                 if (!src.content) continue;
                 try {
                     const parsed = this.parseJson(src.content);
-                    if (parsed && (parsed.company || parsed.salary_estimates || parsed.hiring_strategy || parsed.sources || parsed.recent_news)) {
+                    if (this.isLikelyStructuredDossier(parsed, normalizedCompany)) {
                         const providerDossier = this.normalizeDossier(normalizedCompany, parsed);
                         providerDossier.fetched_at = new Date().toISOString();
                         this.cached.set(cacheKey, providerDossier);
@@ -253,7 +359,7 @@ export class CompanyResearchEngine {
         }).join('\n\n');
 
         const sourcePolicy = hasSources
-            ? 'Use ONLY the sources provided. If data is missing, use empty strings or empty arrays and keep confidence low.'
+            ? 'Use provided sources as PRIMARY evidence. If a field is missing from sources, infer a cautious estimate from general knowledge instead of leaving it blank; mark confidence low and identify inferred content in source attribution.'
             : 'No sources are provided. Use general knowledge to give rough estimates. Mark confidence low and set sources to ["general knowledge"].';
 
         const prompt = [
@@ -321,9 +427,8 @@ export class CompanyResearchEngine {
                 try {
                     const refinedParsed = this.parseJson(refinedRaw);
                     const refined = this.normalizeDossier(normalizedCompany, refinedParsed);
-                    // Merge sources lists and prefer refined fields when present
-                    const mergedSources = Array.from(new Set([...(refined.sources || []), ...(dossier.sources || [])]));
-                    dossier = { ...dossier, ...refined, sources: mergedSources } as CompanyDossier;
+                    // Merge without allowing sparse refined fields to wipe useful existing values.
+                    dossier = this.mergeDossiers(dossier, refined);
                     console.log('[CompanyResearch] Dossier refined using provider snippets and LLM.');
                     } catch (e) {
                     console.warn('[CompanyResearch] Failed to parse refined dossier, keeping initial dossier:', e?.message || e);
