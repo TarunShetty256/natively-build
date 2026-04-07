@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useState } from "react"
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { AnimatePresence, motion } from "framer-motion"
+import OnboardingSpotlight from "./OnboardingSpotlight"
 
 type OnboardingDemoModalProps = {
   isOpen: boolean
@@ -65,6 +66,9 @@ const OnboardingDemoModal: React.FC<OnboardingDemoModalProps> = ({
 }) => {
   const [stepIndex, setStepIndex] = useState(0)
   const [keyStatus, setKeyStatus] = useState<{ hasAIKey: boolean; hasSTTKey: boolean } | null>(null)
+  const [spotlightRect, setSpotlightRect] = useState<DOMRect | null>(null)
+  const openSettingsButtonRef = useRef<HTMLButtonElement | null>(null)
+  const startMeetingButtonRef = useRef<HTMLButtonElement | null>(null)
 
   useEffect(() => {
     if (isOpen) {
@@ -110,6 +114,37 @@ const OnboardingDemoModal: React.FC<OnboardingDemoModalProps> = ({
   const step = useMemo(() => steps[stepIndex], [stepIndex])
   const isFirstStep = stepIndex === 0
   const isLastStep = stepIndex === steps.length - 1
+  const spotlightEnabled = stepIndex === 1 || stepIndex === 2
+
+  const getSpotlightTarget = useCallback(() => {
+    if (!isOpen) return null
+    if (stepIndex === 1) return openSettingsButtonRef.current
+    if (stepIndex === 2) return startMeetingButtonRef.current
+    return null
+  }, [isOpen, stepIndex])
+
+  useEffect(() => {
+    if (!isOpen || !spotlightEnabled) {
+      setSpotlightRect(null)
+      return
+    }
+
+    const updateSpotlightRect = () => {
+      const target = getSpotlightTarget()
+      setSpotlightRect(target ? target.getBoundingClientRect() : null)
+    }
+
+    updateSpotlightRect()
+    const frameId = window.requestAnimationFrame(updateSpotlightRect)
+    window.addEventListener("resize", updateSpotlightRect)
+    window.addEventListener("scroll", updateSpotlightRect, true)
+
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      window.removeEventListener("resize", updateSpotlightRect)
+      window.removeEventListener("scroll", updateSpotlightRect, true)
+    }
+  }, [isOpen, spotlightEnabled, getSpotlightTarget])
 
   const handleNext = () => {
     if (isLastStep) {
@@ -177,6 +212,7 @@ const OnboardingDemoModal: React.FC<OnboardingDemoModalProps> = ({
 
             {stepIndex === 1 && onOpenSettings && (
               <button
+                ref={openSettingsButtonRef}
                 type="button"
                 onClick={onOpenSettings}
                 className="mb-3 rounded-lg border border-[#4C8DFF]/35 bg-[#4C8DFF]/15 px-3 py-2 text-sm font-medium text-[#C9DDFF] transition hover:bg-[#4C8DFF]/25"
@@ -202,6 +238,7 @@ const OnboardingDemoModal: React.FC<OnboardingDemoModalProps> = ({
 
             {stepIndex === 2 && onStartMeeting && (
               <button
+                ref={startMeetingButtonRef}
                 type="button"
                 onClick={onStartMeeting}
                 className="mb-6 rounded-lg border border-[#4C8DFF]/35 bg-[#4C8DFF]/15 px-3 py-2 text-sm font-medium text-[#C9DDFF] transition hover:bg-[#4C8DFF]/25"
@@ -249,6 +286,13 @@ const OnboardingDemoModal: React.FC<OnboardingDemoModalProps> = ({
               </div>
             </div>
           </motion.div>
+
+          <OnboardingSpotlight
+            isActive={spotlightEnabled && !!spotlightRect}
+            targetRect={spotlightRect}
+            padding={14}
+            borderRadius={14}
+          />
         </motion.div>
       )}
     </AnimatePresence>
