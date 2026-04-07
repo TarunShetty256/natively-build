@@ -465,14 +465,13 @@ export class AppState {
     this.broadcast('meeting-state-changed', { isActive: this.isMeetingActive });
   }
 
-  private hasAnyConfiguredApiKey(): boolean {
+  private hasAnyConfiguredAIKey(): boolean {
     const { CredentialsManager } = require('./services/CredentialsManager');
     const cm = CredentialsManager.getInstance();
 
     const hasValue = (value?: string): boolean => typeof value === 'string' && value.trim().length > 0;
 
-    // AI providers
-    if (
+    return (
       hasValue(cm.getGeminiApiKey()) ||
       hasValue(cm.getGroqApiKey()) ||
       hasValue(cm.getOpenaiApiKey()) ||
@@ -481,12 +480,17 @@ export class AppState {
       hasValue(process.env.GROQ_API_KEY) ||
       hasValue(process.env.OPENAI_API_KEY) ||
       hasValue(process.env.CLAUDE_API_KEY)
-    ) {
-      return true;
-    }
+    );
+  }
+
+  private hasAnyConfiguredSTTKey(): boolean {
+    const { CredentialsManager } = require('./services/CredentialsManager');
+    const cm = CredentialsManager.getInstance();
+
+    const hasValue = (value?: string): boolean => typeof value === 'string' && value.trim().length > 0;
 
     // Voice/STT providers
-    if (
+    return (
       hasValue(cm.getDeepgramApiKey()) ||
       hasValue(cm.getGroqSttApiKey()) ||
       hasValue(cm.getOpenAiSttApiKey()) ||
@@ -497,21 +501,35 @@ export class AppState {
       hasValue(cm.getGoogleServiceAccountPath()) ||
       hasValue(process.env.DEEPGRAM_API_KEY) ||
       hasValue(process.env.GOOGLE_APPLICATION_CREDENTIALS)
-    ) {
-      return true;
-    }
-
-    return false;
+    );
   }
 
   private notifyMissingKeysIfNeeded(): void {
-    if (this.hasSentMissingKeysToast || this.hasAnyConfiguredApiKey()) {
+    if (this.hasSentMissingKeysToast) {
       return;
     }
 
+    const hasAIKey = this.hasAnyConfiguredAIKey();
+    const hasSTTKey = this.hasAnyConfiguredSTTKey();
+
+    if (hasAIKey && hasSTTKey) {
+      return;
+    }
+
+    let message = 'Add API key to enable AI and voice features';
+    if (!hasAIKey && hasSTTKey) {
+      message = 'Add AI API key to enable responses';
+    } else if (hasAIKey && !hasSTTKey) {
+      message = 'Add STT API key to enable voice input';
+    }
+
     this.hasSentMissingKeysToast = true;
-    this.getWindowHelper().getLauncherWindow()?.webContents.send('missing-keys');
-    this.getWindowHelper().getOverlayWindow()?.webContents.send('missing-keys');
+    this.getWindowHelper().getLauncherWindow()?.webContents.send('missing-keys', message);
+    this.getWindowHelper().getOverlayWindow()?.webContents.send('missing-keys', message);
+  }
+
+  public resetMissingKeysToastFlag(): void {
+    this.hasSentMissingKeysToast = false;
   }
 
   private async bootstrapOllamaEmbeddings() {

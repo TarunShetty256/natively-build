@@ -802,6 +802,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       if (apiKey) {
         const { CredentialsManager } = require('./services/CredentialsManager');
         CredentialsManager.getInstance().setGeminiApiKey(apiKey);
+        appState.resetMissingKeysToastFlag();
       }
 
       return { success: true };
@@ -816,6 +817,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setGeminiApiKey(apiKey);
+      appState.resetMissingKeysToastFlag();
 
       // Also update the LLMHelper immediately
       const llmHelper = appState.processingHelper.getLLMHelper();
@@ -842,6 +844,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setGroqApiKey(apiKey);
+      appState.resetMissingKeysToastFlag();
 
       // Also update the LLMHelper immediately
       const llmHelper = appState.processingHelper.getLLMHelper();
@@ -863,6 +866,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setOpenaiApiKey(apiKey);
+      appState.resetMissingKeysToastFlag();
 
       // Also update the LLMHelper immediately
       const llmHelper = appState.processingHelper.getLLMHelper();
@@ -887,6 +891,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setClaudeApiKey(apiKey);
+      appState.resetMissingKeysToastFlag();
 
       // Also update the LLMHelper immediately
       const llmHelper = appState.processingHelper.getLLMHelper();
@@ -1159,6 +1164,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setGroqSttApiKey(apiKey);
+      appState.resetMissingKeysToastFlag();
       return { success: true };
     } catch (error: any) {
       console.error("Error saving Groq STT API key:", error);
@@ -1170,6 +1176,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setOpenAiSttApiKey(apiKey);
+      appState.resetMissingKeysToastFlag();
       return { success: true };
     } catch (error: any) {
       console.error("Error saving OpenAI STT API key:", error);
@@ -1181,6 +1188,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setDeepgramApiKey(apiKey);
+      appState.resetMissingKeysToastFlag();
 
       // BYOK runtime key update: rebuild STT selection and safely restart streams
       safeReconfigureSTT();
@@ -1211,6 +1219,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setElevenLabsApiKey(apiKey);
+      appState.resetMissingKeysToastFlag();
       return { success: true };
     } catch (error: any) {
       console.error("Error saving ElevenLabs API key:", error);
@@ -1222,6 +1231,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setAzureApiKey(apiKey);
+      appState.resetMissingKeysToastFlag();
       return { success: true };
     } catch (error: any) {
       console.error("Error saving Azure API key:", error);
@@ -1248,6 +1258,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setIbmWatsonApiKey(apiKey);
+      appState.resetMissingKeysToastFlag();
       return { success: true };
     } catch (error: any) {
       console.error("Error saving IBM Watson API key:", error);
@@ -1259,6 +1270,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setSonioxApiKey(apiKey);
+      appState.resetMissingKeysToastFlag();
       return { success: true };
     } catch (error: any) {
       console.error("Error saving Soniox API key:", error);
@@ -1997,6 +2009,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       // Persist the path for future sessions
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setGoogleServiceAccountPath(filePath);
+      appState.resetMissingKeysToastFlag();
 
       // BYOK runtime key update: rebuild STT selection and safely restart streams
       safeReconfigureSTT();

@@ -215,10 +215,10 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     useEffect(() => {
         if (!window.electronAPI?.onMissingKeys) return;
 
-        const unsubscribe = window.electronAPI.onMissingKeys(() => {
+        const unsubscribe = window.electronAPI.onMissingKeys((message: string) => {
             if (hasShownMissingKeysToastRef.current) return;
             hasShownMissingKeysToastRef.current = true;
-            showToast('API Key Needed', 'Add API key to enable AI and voice features', 'neutral');
+            showToast('API Key Needed', message || 'Add API key to enable AI and voice features', 'neutral');
         });
 
         return () => unsubscribe();
