@@ -320,6 +320,14 @@ Output only the spoken answer in natural English.
 Keep it concise and interview-ready.
 </interview_style>`);
 
+            contextParts.push(`<ux_premium_rules>
+- First line must contain the core answer immediately
+- Keep answers concise and adaptive (2-5 lines)
+- Use short, clear sentences
+- Avoid long paragraphs
+- Prioritize clarity in the first line
+</ux_premium_rules>`);
+
             contextParts.push(`<final_self_check>
 Before finalizing, verify:
 1) The answer directly addresses the latest question.
