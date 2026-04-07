@@ -6,6 +6,8 @@ export interface WhatToAnswerRequest {
     latestQuestion: string;
     transcriptWindow?: string;
     intentResult?: IntentResult;
+    isCoding?: boolean;
+    intent?: string;
     lastAnswer?: string | null;
     previousQuestion?: string | null;
     previousAnswer?: string | null;
@@ -57,6 +59,8 @@ export class WhatToAnswerLLM {
             const companyContext = (request.companyContext || '').trim();
             const personaEnabled = !!request.personaEnabled;
             const deterministicMode = request.deterministicMode || 'answer';
+            const intent = (request.intent || request.intentResult?.intent || 'general').trim();
+            const isCoding = !!request.isCoding || intent === 'coding';
 
             // Build RECENT MESSAGES block (short-term memory first)
             const recentMessageLines: string[] = [];
@@ -175,6 +179,39 @@ If the question is about skills, strengths, or challenges, tie it directly to a 
             contextParts.push(`<deterministic_mode>
 ACTIVE RESPONSE MODE: ${deterministicMode}
 </deterministic_mode>`);
+            contextParts.push(`<intent_metadata>
+INTENT: ${intent}
+IS_CODING: ${isCoding}
+</intent_metadata>`);
+
+            if (isCoding) {
+                contextParts.push(`<coding_response_rules>
+When IS_CODING is true, use this exact order:
+1) One short line: direct approach summary.
+2) Clean code block with complete relevant implementation.
+3) One short line: time and space complexity.
+Always format code inside a proper code block.
+Keep explanation extremely brief before code.
+Do not ask follow-up questions. Keep naming clear and production-oriented.
+</coding_response_rules>`);
+            }
+
+            if (intent === 'behavioral') {
+                contextParts.push(`<behavioral_intent_rules>
+When INTENT is behavioral:
+1) Start with a direct answer.
+2) Add one short real example from experience.
+3) End with a strong conclusion sentence.
+
+Keep it natural, confident, and specific.
+</behavioral_intent_rules>`);
+            }
+// 👉 ADD IT HERE
+contextParts.push(`<context_default_rules>
+If intent is not coding or behavioral:
+- Give a short direct answer (3–4 lines)
+- Do not over-explain
+</context_default_rules>`);  
 
             if (deterministicMode === 'behavioral') {
                 contextParts.push(`<behavioral_answer_rules>
@@ -213,10 +250,12 @@ Previous answer was too generic. Rewrite with stronger contextual grounding and 
 </retry_note>`);
             }
             contextParts.push(`<interview_style>
+If this is a follow-up question, continue from previous context instead of restarting.
+
 You are a high-performing candidate interviewing at a top tech company.
 Answer as if you are speaking live in the interview.
 Be confident and direct; no filler.
-Keep the answer to 2-3 sentences maximum.
+Keep the answer under 4-5 lines.
 
 Start with a direct answer.
 Include one real example, project, or experience.
@@ -236,7 +275,7 @@ Do not use vague self-descriptions like:
 
 If your answer sounds generic, rewrite it with a concrete example before responding.
 If persona is enabled, strongly prioritize using the candidate's real experience.
-If the question is unclear, ask exactly one short clarification question instead of guessing.
+Do not ask any clarification or follow-up questions.
 Output only the spoken answer in natural English.
 Keep it concise and interview-ready.
 </interview_style>`);

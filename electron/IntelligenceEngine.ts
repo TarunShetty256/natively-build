@@ -31,20 +31,40 @@ interface ModeGenerationResult {
     aborted: boolean;
 }
 
-function detectMode(input: string): Mode {
+interface ModeDetectionMetadata {
+    mode: Mode;
+    intent: string;
+    isCoding: boolean;
+}
+
+function detectModeMetadata(input: string): ModeDetectionMetadata {
     const text = (input || '').toLowerCase();
 
-    const behavioralPattern = /tell me about a time|describe a situation|behavioral|conflict|failure|challenge|leadership|mentor|stakeholder|disagreement|difficult teammate|pressure/i;
+    const behavioralPattern = /\b(tell me about a time|describe a situation|behavioral|conflict|failure|challenge|leadership|mentor|stakeholder|disagreement|difficult teammate|pressure|feedback|mistake)\b/i;
     if (behavioralPattern.test(text)) {
-        return 'behavioral';
+        return { mode: 'behavioral', intent: 'behavioral', isCoding: false };
     }
 
-    const systemDesignPattern = /system design|design a|architecture|scalab|high[ -]?level design|throughput|latency|availability|reliability|fault tolerance|trade[- ]?off|distributed|microservice|capacity/i;
+    const systemDesignPattern = /\b(system design|design (a|an)|architecture|scalab\w*|high[ -]?level design|throughput|latency|availability|reliability|fault tolerance|trade[- ]?off|distributed|microservice|capacity|load balanc\w*|partition\w*|replication)\b/i;
     if (systemDesignPattern.test(text)) {
-        return 'system_design';
+        return { mode: 'system_design', intent: 'system_design', isCoding: false };
     }
 
-    return 'answer';
+    const negotiationPattern = /\b(negotia\w*|salary|compensation|offer|counter[ -]?offer|bonus|equity|benefits|package|ctc|notice period|relocation|joining bonus|base pay|expected salary)\b/i;
+    if (negotiationPattern.test(text)) {
+        return { mode: 'answer', intent: 'negotiation', isCoding: false };
+    }
+
+    const codingPattern = /\b(code|coding|implement\w*|algorithm|debug\w*|refactor\w*|function|class|api|sql|query|complexity|time complexity|space complexity|unit test|test case|bug|fix)\b/i;
+    if (codingPattern.test(text)) {
+        return { mode: 'answer', intent: 'coding', isCoding: true };
+    }
+
+    return { mode: 'answer', intent: 'general', isCoding: false };
+}
+
+function detectMode(input: string): Mode {
+    return detectModeMetadata(input).mode;
 }
 
 function extractKeywordAnchors(text: string, maxKeywords: number = 12): string[] {
@@ -125,8 +145,16 @@ function detectAutoFollowUpFocus(question: string): string | null {
     if (/\b(why|how)\b\s*\??$/.test(q) || /^why\b|^how\b/.test(q)) return 'reasoning';
     if (/go deeper|deeper|elaborate|expand|explain more|tell me more|can you go deeper/.test(q)) return 'depth';
     if (/scalability|scale|throughput|latency|availability|reliability|fault tolerance|trade[- ]?off/.test(q)) return 'scalability';
-    if (/what about\b/.test(q)) return 'edge_cases';
+    if (/what about\b|edge cases?\??/.test(q)) return 'edge_cases';
     return null;
+}
+
+function isShortFollowUpPrompt(question: string): boolean {
+    const q = (question || '').trim().toLowerCase();
+    if (!q) return false;
+    if (q.split(/\s+/).length > 5) return false;
+    if (/^(why|how|edge cases?|what else|details|examples?)\??$/.test(q)) return true;
+    return /^(and|also|then)\??$/.test(q);
 }
 
 function isRelatedToPreviousQuestion(currentQuestion: string, previousQuestion: string | null): boolean {
@@ -140,6 +168,8 @@ function isRelatedToPreviousQuestion(currentQuestion: string, previousQuestion: 
 }
 
 function isLikelyAutoFollowUp(currentQuestion: string, previousQuestion: string | null): boolean {
+    if (isShortFollowUpPrompt(currentQuestion)) return true;
+
     const focus = detectAutoFollowUpFocus(currentQuestion);
     if (focus) return true;
 
@@ -210,6 +240,9 @@ export class IntelligenceEngine extends EventEmitter {
     private lastTranscriptTime: number = 0;
     private lastTriggerTime: number = 0;
     private readonly triggerCooldown: number = 3000; // 3 seconds
+    private sessionLastQuestion: string | null = null;
+    private sessionLastTimestamp: number = 0;
+    private readonly sessionIdleResetMs: number = 180000; // 3 minutes
 
     constructor(llmHelper: LLMHelper, session: SessionTracker) {
         super();
@@ -668,6 +701,10 @@ export class IntelligenceEngine extends EventEmitter {
                     this.session.addAssistantMessage(answer);
                     this.stateManager.setLastQuestion(manualQuestion || null);
                     this.stateManager.setLastAnswer(answer);
+                    if (manualQuestion) {
+                        this.sessionLastQuestion = manualQuestion;
+                        this.sessionLastTimestamp = Date.now();
+                    }
                     this.emit('suggested_answer', answer, manualQuestion || 'inferred', confidenceResult.score, confidenceResult.level);
                 }
                 this.setMode('idle');
@@ -705,19 +742,26 @@ export class IntelligenceEngine extends EventEmitter {
                 lastInterim?.text || null
             );
 
+            if (this.sessionLastTimestamp > 0 && (now - this.sessionLastTimestamp) > this.sessionIdleResetMs) {
+                console.log('[IntelligenceEngine] Session idle for >3m, resetting runtime state.');
+                this.stateManager.reset();
+                this.sessionLastQuestion = null;
+            }
+
             const runtimeState = this.stateManager.getState();
-            const resolvedQuestion = explicitQuestion || extracted.question || runtimeState.lastQuestion || '';
-            const inferredQuestion = resolvedQuestion || 'inferred';
+            const previousQuestion = this.sessionLastQuestion || runtimeState.lastQuestion;
+            const rawQuestion = explicitQuestion || extracted.question || previousQuestion || '';
+            const isShortFollowUp = isShortFollowUpPrompt(rawQuestion);
+            const resolvedQuestion = (isShortFollowUp && previousQuestion)
+                ? `${previousQuestion} (${rawQuestion})`
+                : rawQuestion;
+            const inferredQuestion = rawQuestion || 'inferred';
             const questionWindow = extracted.transcriptWindow || buildQuestionFocusedTranscriptWindow(transcriptTurns, 8);
-            const autoFollowUp = isLikelyAutoFollowUp(resolvedQuestion, runtimeState.lastQuestion);
-            const followUpFocus = detectAutoFollowUpFocus(resolvedQuestion);
-            const relatedToPrevious = isRelatedToPreviousQuestion(resolvedQuestion, runtimeState.lastQuestion);
+            const autoFollowUp = isShortFollowUp || isLikelyAutoFollowUp(rawQuestion, previousQuestion);
+            const followUpFocus = detectAutoFollowUpFocus(rawQuestion);
+            const relatedToPrevious = isShortFollowUp || isRelatedToPreviousQuestion(rawQuestion, previousQuestion);
             const forceVariation = autoFollowUp || relatedToPrevious;
             const recentQAPairs = this.stateManager.getRecentQAPairs(5);
-
-            if (resolvedQuestion) {
-                this.stateManager.setLastQuestion(resolvedQuestion);
-            }
 
             // If this is an inferred request with unchanged source text+context, skip regeneration
             // for a short window to avoid repeating stale answers in a loop.
@@ -741,6 +785,13 @@ export class IntelligenceEngine extends EventEmitter {
                 this.session.getAssistantResponseHistory().length
             );
 
+            const modeMetadata = detectModeMetadata(resolvedQuestion || questionWindow);
+            const resolvedIntent = modeMetadata.intent === 'general' ? intentResult.intent : modeMetadata.intent;
+            const responseMetadata = {
+                isCoding: modeMetadata.isCoding || intentResult.intent === 'coding',
+                intent: resolvedIntent
+            };
+
             const detectedMode: Mode = this.responseModeOverride || (
                 intentResult.intent === 'behavioral'
                     ? 'behavioral'
@@ -762,6 +813,8 @@ export class IntelligenceEngine extends EventEmitter {
                 relatedToPrevious,
                 forceVariation,
                 modeHint: 'what_to_say',
+                isCoding: responseMetadata.isCoding,
+                intent: responseMetadata.intent,
                 resume: knowledgeContext.resume,
                 jobDescription: knowledgeContext.jobDescription,
                 companyContext: knowledgeContext.company,
@@ -769,7 +822,7 @@ export class IntelligenceEngine extends EventEmitter {
                 enforceContextAnchors: true
             };
 
-            console.log(`[IntelligenceEngine] Question-focused generation: intent=${intentResult.intent}, mode=${detectedMode}, source=${extracted.source}${imagePaths?.length ? `, with ${imagePaths.length} image(s)` : ''}`);
+            console.log(`[IntelligenceEngine] Question-focused generation: intent=${responseMetadata.intent}, coding=${responseMetadata.isCoding}, mode=${detectedMode}, source=${extracted.source}${imagePaths?.length ? `, with ${imagePaths.length} image(s)` : ''}`);
 
             const generationId = ++this.currentGenerationId;
             let fullAnswer = '';
@@ -835,6 +888,8 @@ export class IntelligenceEngine extends EventEmitter {
             this.stateManager.setLastAnswer(fullAnswer);
             if (resolvedQuestion) {
                 this.stateManager.setLastQuestion(resolvedQuestion);
+                this.sessionLastQuestion = resolvedQuestion;
+                this.sessionLastTimestamp = Date.now();
             }
             this.stateManager.pushQAPair(resolvedQuestion || inferredQuestion, fullAnswer);
 
@@ -852,7 +907,10 @@ export class IntelligenceEngine extends EventEmitter {
                 type: 'assist',
                 timestamp: Date.now(),
                 question: inferredQuestion,
-                answer: fullAnswer
+                answer: fullAnswer,
+                mode: detectedMode,
+                intent: responseMetadata.intent,
+                isCoding: responseMetadata.isCoding
             });
 
             // CQ-05 fix: only emit the "complete" event after a non-aborted stream.
@@ -1514,6 +1572,8 @@ export class IntelligenceEngine extends EventEmitter {
     reset(): void {
         this.activeMode = 'idle';
         this.stateManager.reset();
+        this.sessionLastQuestion = null;
+        this.sessionLastTimestamp = 0;
         this.currentGenerationId++; // Increment to break all active LLM streams
         this.lastWhatToSayInputKey = null;
         this.lastWhatToSayOutput = null;
