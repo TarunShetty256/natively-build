@@ -384,6 +384,60 @@ export class IntelligenceEngine extends EventEmitter {
         }
     }
 
+    private async runRoutedResponse<TInput, TResult>(
+        input: TInput,
+        metadata: {
+            mode?: Mode;
+            execute: (input: TInput) => Promise<TResult>;
+        }
+    ): Promise<TResult> {
+        const runPrimary = async (): Promise<TResult> => {
+            if (metadata.mode) {
+                const executeModeOperation = metadata.execute as unknown as (input: TInput) => Promise<ModeGenerationResult>;
+                return this.executeWithModeRouting(metadata.mode, () => executeModeOperation(input)) as unknown as TResult;
+            }
+
+            return metadata.execute(input);
+        };
+
+        try {
+            return await runPrimary();
+        } catch (primaryError) {
+            const originalModel = this.llmHelper.getCurrentModel();
+            const lowerModel = (originalModel || '').toLowerCase();
+            const fallbackCandidates = lowerModel.includes('gpt-') || lowerModel.includes('o1-') || lowerModel.includes('o3-')
+                ? ['llama', 'gemini']
+                : lowerModel.includes('llama') || lowerModel.includes('mixtral') || lowerModel.includes('gemma') || lowerModel.includes('qwen') || lowerModel.includes('mistral')
+                    ? ['gpt-5.4', 'gemini']
+                    : ['llama', 'gpt-5.4'];
+
+            let lastError: Error = primaryError as Error;
+
+            try {
+                for (const fallbackModel of fallbackCandidates) {
+                    if (!fallbackModel || fallbackModel === originalModel) {
+                        continue;
+                    }
+
+                    try {
+                        this.llmHelper.setModel(fallbackModel);
+                        console.warn(`[IntelligenceEngine] Primary model failed (${originalModel}). Retrying with fallback: ${fallbackModel}`);
+                        return await runPrimary();
+                    } catch (fallbackError) {
+                        lastError = fallbackError as Error;
+                        console.warn(`[IntelligenceEngine] Fallback model failed (${fallbackModel}): ${(fallbackError as Error).message}`);
+                    }
+                }
+            } finally {
+                if (this.llmHelper.getCurrentModel() !== originalModel) {
+                    this.llmHelper.setModel(originalModel);
+                }
+            }
+
+            throw lastError;
+        }
+    }
+
     private isWeakModeResponse(answer: string, mode: Mode, knowledgeContext: KnowledgeContextBundle): boolean {
         const trimmed = (answer || '').trim();
         if (trimmed.length < 24) return true;
@@ -437,9 +491,17 @@ export class IntelligenceEngine extends EventEmitter {
             enforceContextAnchors: true
         };
 
-        const firstPass = await this.executeWithModeRouting(mode, async () => {
+        const firstPass = await this.runRoutedResponse(modeRequest, {
+            mode,
+            execute: async (routedModeRequest) => {
             let fullAnswer = '';
-            const stream = this.whatToAnswerLLM!.generateStream(modeRequest, imagePaths);
+            const stream = await this.runRoutedResponse(
+                { routedModeRequest, imagePaths },
+                {
+                    execute: async ({ routedModeRequest: requestForStream, imagePaths: streamImagePaths }) =>
+                        this.whatToAnswerLLM!.generateStream(requestForStream, streamImagePaths)
+                }
+            );
             let streamAborted = false;
 
             for await (const token of stream) {
@@ -454,6 +516,7 @@ export class IntelligenceEngine extends EventEmitter {
             }
 
             return { answer: fullAnswer, aborted: streamAborted };
+            }
         });
 
         if (firstPass.aborted) {
@@ -468,9 +531,14 @@ export class IntelligenceEngine extends EventEmitter {
                 forceVariation: true
             };
 
-            const retryPass = await this.executeWithModeRouting(mode, async () => {
-                const retried = (await this.whatToAnswerLLM!.generate(retryRequest)).trim();
+            const retryPass = await this.runRoutedResponse(retryRequest, {
+                mode,
+                execute: async (routedRetryRequest) => {
+                const retried = (await this.runRoutedResponse(routedRetryRequest, {
+                    execute: async (requestForRetry) => this.whatToAnswerLLM!.generate(requestForRetry)
+                })).trim();
                 return { answer: retried, aborted: false };
+                }
             });
 
             if (retryPass.answer && !this.isProviderFailureMessage(retryPass.answer)) {
@@ -637,7 +705,9 @@ export class IntelligenceEngine extends EventEmitter {
                 return null;
             }
 
-            const insight = await this.assistLLM.generate(context);
+            const insight = await this.runRoutedResponse(context, {
+                execute: async (assistContext) => this.assistLLM!.generate(assistContext)
+            });
 
             if (this.assistCancellationToken?.signal.aborted) {
                 return null;
@@ -691,7 +761,13 @@ export class IntelligenceEngine extends EventEmitter {
                 }
                 const context = this.session.getFormattedContext(180);
                 const manualQuestion = explicitQuestion || this.stateManager.getState().lastQuestion || '';
-                const answer = await this.answerLLM.generate(manualQuestion, context);
+                const answer = await this.runRoutedResponse(
+                    { manualQuestion, context },
+                    {
+                        execute: async ({ manualQuestion: questionForFallback, context: fallbackContext }) =>
+                            this.answerLLM!.generate(questionForFallback, fallbackContext)
+                    }
+                );
                 if (answer) {
                     const confidenceResult = this.calculateAnswerConfidence(
                         manualQuestion || 'inferred',
@@ -962,10 +1038,16 @@ export class IntelligenceEngine extends EventEmitter {
 
             const generationId = ++this.currentGenerationId;
             let fullRefined = "";
-            const stream = this.followUpLLM.generateStream(
-                lastMsg,
-                refinementRequest,
-                context
+            const stream = await this.runRoutedResponse(
+                { lastMsg, refinementRequest, context },
+                {
+                    execute: async ({ lastMsg: followUpMessage, refinementRequest: followUpRequest, context: followUpContext }) =>
+                        this.followUpLLM!.generateStream(
+                            followUpMessage,
+                            followUpRequest,
+                            followUpContext
+                        )
+                }
             );
             let streamAborted = false;
 
@@ -1042,7 +1124,9 @@ export class IntelligenceEngine extends EventEmitter {
 
             const generationId = ++this.currentGenerationId;
             let fullSummary = "";
-            const stream = this.recapLLM.generateStream(context);
+            const stream = await this.runRoutedResponse(context, {
+                execute: async (recapContext) => this.recapLLM!.generateStream(recapContext)
+            });
             let streamAborted = false;
 
             for await (const token of stream) {
@@ -1115,7 +1199,9 @@ export class IntelligenceEngine extends EventEmitter {
 
             const generationId = ++this.currentGenerationId;
             let fullClarification = "";
-            const stream = this.clarifyLLM.generateStream(context);
+            const stream = await this.runRoutedResponse(context, {
+                execute: async (clarifyContext) => this.clarifyLLM!.generateStream(clarifyContext)
+            });
             let streamAborted = false;
 
             for await (const token of stream) {
@@ -1182,7 +1268,9 @@ export class IntelligenceEngine extends EventEmitter {
 
             const generationId = ++this.currentGenerationId;
             let fullQuestions = "";
-            const stream = this.followUpQuestionsLLM.generateStream(context);
+            const stream = await this.runRoutedResponse(context, {
+                execute: async (followUpContext) => this.followUpQuestionsLLM!.generateStream(followUpContext)
+            });
 
             for await (const token of stream) {
                 if (this.currentGenerationId !== generationId) {
@@ -1230,7 +1318,13 @@ export class IntelligenceEngine extends EventEmitter {
             }
 
             const context = this.session.getFormattedContext(120);
-            const answer = await this.answerLLM.generate(question, context);
+            const answer = await this.runRoutedResponse(
+                { question, context },
+                {
+                    execute: async ({ question: manualQuestion, context: manualContext }) =>
+                        this.answerLLM!.generate(manualQuestion, manualContext)
+                }
+            );
 
             if (answer) {
                 this.session.addAssistantMessage(answer);
@@ -1294,11 +1388,17 @@ export class IntelligenceEngine extends EventEmitter {
 
             const generationId = ++this.currentGenerationId;
             let fullHint = "";
-            const stream = this.codeHintLLM.generateStream(
-                imagePaths,
-                questionContext ?? undefined,
-                questionSource,
-                transcriptContext ?? undefined
+            const stream = await this.runRoutedResponse(
+                { imagePaths, questionContext, questionSource, transcriptContext },
+                {
+                    execute: async ({ imagePaths: hintImagePaths, questionContext: hintQuestionContext, questionSource: hintQuestionSource, transcriptContext: hintTranscriptContext }) =>
+                        this.codeHintLLM!.generateStream(
+                            hintImagePaths,
+                            hintQuestionContext ?? undefined,
+                            hintQuestionSource,
+                            hintTranscriptContext ?? undefined
+                        )
+                }
             );
 
             for await (const token of stream) {
@@ -1424,7 +1524,13 @@ export class IntelligenceEngine extends EventEmitter {
 
             const generationId = ++this.currentGenerationId;
             let fullResult = "";
-            const stream = this.brainstormLLM.generateStream(context, imagePaths);
+            const stream = await this.runRoutedResponse(
+                { context, imagePaths },
+                {
+                    execute: async ({ context: brainstormContext, imagePaths: brainstormImagePaths }) =>
+                        this.brainstormLLM!.generateStream(brainstormContext, brainstormImagePaths)
+                }
+            );
             let streamAborted = false;
 
             for await (const token of stream) {
@@ -1493,9 +1599,15 @@ export class IntelligenceEngine extends EventEmitter {
         }
 
         try {
-            const diversified = await this.followUpLLM.generate(
-                candidate,
-                `Rephrase this answer with a different structure and a different concrete example while preserving correctness. Keep it concise and directly answer: "${question}".`
+            const diversified = await this.runRoutedResponse(
+                { candidate, question },
+                {
+                    execute: async ({ candidate: answerCandidate, question: answerQuestion }) =>
+                        this.followUpLLM!.generate(
+                            answerCandidate,
+                            `Rephrase this answer with a different structure and a different concrete example while preserving correctness. Keep it concise and directly answer: "${answerQuestion}".`
+                        )
+                }
             );
             const clean = (diversified || '').trim();
             return clean.length > 0 ? clean : candidate;

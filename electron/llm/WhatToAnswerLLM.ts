@@ -200,6 +200,26 @@ If ROUTE is behavioral → conversational answer
 If ROUTE is system_design → focus on scalability + tradeoffs
 </route_rules>`);
 
+            contextParts.push(`<ux_adaptive_rules>
+Adjust tone and structure based on intent.
+Keep answers easy to scan.
+If draft answer is long, put the strongest information in the first line.
+</ux_adaptive_rules>`);
+
+            if (isCoding && !isCodeHintRequest) {
+                contextParts.push(`<ux_coding_compact_rules>
+For coding intent, prioritize compact + structured output.
+Use short sections and minimal explanation around the core solution.
+</ux_coding_compact_rules>`);
+            }
+
+            if (intent === 'behavioral' || deterministicMode === 'behavioral') {
+                contextParts.push(`<ux_behavioral_conversation_rules>
+For behavioral intent, prioritize a conversational and natural spoken tone.
+Sound like a confident candidate speaking live, not a template.
+</ux_behavioral_conversation_rules>`);
+            }
+
             if (isCodeHintRequest) {
                 contextParts.push(`<code_hint_rules>
 When providing a hint:
@@ -224,7 +244,7 @@ Keep it concise.
 </brainstorm_rules>`);
             }
 
-            if (isCoding && !isCodeHintRequest) {
+            if (isCoding && !isCodeHintRequest && !isBrainstormRequest) {
                 contextParts.push(`<coding_response_rules>
 When IS_CODING is true, use this exact order:
 1) One short line: direct approach summary.
@@ -246,12 +266,13 @@ When INTENT is behavioral:
 Keep it natural, confident, and specific.
 </behavioral_intent_rules>`);
             }
-// 👉 ADD IT HERE
-contextParts.push(`<context_default_rules>
+            if (!isBrainstormRequest) {
+                contextParts.push(`<context_default_rules>
 If intent is not coding or behavioral:
 - Give a short direct answer (3–4 lines)
 - Do not over-explain
-</context_default_rules>`);  
+</context_default_rules>`);
+            }
 
             if (deterministicMode === 'behavioral') {
                 contextParts.push(`<behavioral_answer_rules>
@@ -297,7 +318,7 @@ Answer as if you are speaking live in the interview.
 Be confident and direct; no filler.
 Keep the answer under 4-5 lines.
 
-Start with a direct answer.
+${isBrainstormRequest ? '' : 'Start with a direct answer.'}
 Include one real example, project, or experience.
 Include at least one concrete technology/tool/framework when relevant.
 Mention measurable impact when possible (performance, scale, or outcomes).
