@@ -4,6 +4,7 @@ import { ToastProvider, ToastViewport } from "./components/ui/toast"
 import NativelyInterface from "./components/NativelyInterface"
 import SettingsPopup from "./components/SettingsPopup" // Keeping for legacy/specific window support if needed
 import Launcher from "./components/Launcher"
+import OnboardingDemoModal from "./components/OnboardingDemoModal"
 import ModelSelectorWindow from "./components/ModelSelectorWindow"
 import SettingsOverlay from "./components/SettingsOverlay"
 import StartupSequence from "./components/StartupSequence"
@@ -22,6 +23,7 @@ import { analytics } from "./lib/analytics/analytics.service"
 import { ErrorBoundary } from "./components/ErrorBoundary"
 
 const queryClient = new QueryClient()
+const ONBOARDING_DONE_KEY = 'onboarding_done'
 
 const App: React.FC = () => {
   const isSettingsWindow = new URLSearchParams(window.location.search).get('window') === 'settings';
@@ -80,6 +82,14 @@ const App: React.FC = () => {
   const [showStartup, setShowStartup] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState('general');
+  const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
+  const [isOnboardingDone, setIsOnboardingDone] = useState(() => {
+    try {
+      return localStorage.getItem(ONBOARDING_DONE_KEY) === 'true';
+    } catch {
+      return false;
+    }
+  });
   const [showPremiumModal, setShowPremiumModal] = useState(false);
   const [isPremiumActive, setIsPremiumActive] = useState(() => {
     try {
@@ -181,6 +191,14 @@ const App: React.FC = () => {
     }
   }, []);
 
+  useEffect(() => {
+    if (!isLauncherWindow && !isDefault) return;
+    if (showStartup || isSettingsOpen) return;
+    if (!isOnboardingDone) {
+      setIsOnboardingOpen(true);
+    }
+  }, [isLauncherWindow, isDefault, showStartup, isSettingsOpen, isOnboardingDone]);
+
   // Listen for overlay opacity changes — scoped to overlay window only
   useEffect(() => {
     if (!isOverlayWindow) return;
@@ -245,6 +263,20 @@ const App: React.FC = () => {
     } catch (err) {
       console.error("Failed to start meeting:", err);
     }
+  };
+
+  const handleCompleteOnboarding = () => {
+    try {
+      localStorage.setItem(ONBOARDING_DONE_KEY, 'true');
+    } catch {
+      // Ignore storage issues and still close to avoid blocking the user.
+    }
+    setIsOnboardingDone(true);
+    setIsOnboardingOpen(false);
+  };
+
+  const handleSkipOnboarding = () => {
+    handleCompleteOnboarding();
   };
 
   const handleEndMeeting = async () => {
@@ -379,6 +411,18 @@ const App: React.FC = () => {
                   }}
                   initialTab={settingsInitialTab}
                 />
+                <OnboardingDemoModal
+                  isOpen={isOnboardingOpen && !isSettingsOpen && isLauncherMainView}
+                  onClose={() => setIsOnboardingOpen(false)}
+                  onSkip={handleSkipOnboarding}
+                  onComplete={handleCompleteOnboarding}
+                  onOpenSettings={() => {
+                    setSettingsInitialTab('general');
+                    setIsSettingsOpen(true);
+                    setIsOnboardingOpen(false);
+                  }}
+                  onStartMeeting={handleStartMeeting}
+                />
                 <ToastViewport />
               </ToastProvider>
             </QueryClientProvider>
@@ -426,6 +470,15 @@ const App: React.FC = () => {
 
       {isLauncherMainView && !isSettingsOpen && (
         <>
+          {!isOnboardingOpen && (
+            <button
+              type="button"
+              onClick={() => setIsOnboardingOpen(true)}
+              className="fixed bottom-6 left-6 z-40 rounded-lg border border-white/15 bg-black/45 px-3 py-2 text-xs font-medium text-white transition hover:bg-black/70"
+            >
+              Reopen demo
+            </button>
+          )}
           <ProfileFeatureToaster 
             isOpen={activeAd === 'profile'} 
             onDismiss={dismissAd}
