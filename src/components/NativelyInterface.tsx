@@ -128,6 +128,7 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
     const voiceInputRef = useRef<string>('');  // Ref for capturing in async handlers
     const textInputRef = useRef<HTMLInputElement>(null); // Ref for input focus
     const isStealthRef = useRef<boolean>(false); // Tracks if the next expansion should be stealthy
+    const hasShownMissingKeysToastRef = useRef(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const contentRef = useRef<HTMLDivElement>(null);
     const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -209,6 +210,19 @@ const NativelyInterface: React.FC<NativelyInterfaceProps> = ({ onEndMeeting, ove
             setActionButtonMode(mode);
         });
         return () => { unsubscribe?.(); };
+    }, []);
+
+    useEffect(() => {
+        if (!window.electronAPI?.onMissingKeys) return;
+
+        const unsubscribe = window.electronAPI.onMissingKeys(() => {
+            if (hasShownMissingKeysToastRef.current) return;
+            hasShownMissingKeysToastRef.current = true;
+            showToast('API Key Needed', 'Add API key to enable AI and voice features', 'neutral');
+        });
+
+        return () => unsubscribe();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const codeTheme = isLightTheme ? oneLight : vscDarkPlus;

@@ -28,6 +28,7 @@ export interface ElectronAPI {
   onProblemExtracted: (callback: (data: any) => void) => () => void
   onSolutionSuccess: (callback: (data: any) => void) => () => void
   onUnauthorized: (callback: () => void) => () => void
+  onMissingKeys: (callback: () => void) => () => void
   onDebugError: (callback: (error: string) => void) => () => void
   takeScreenshot: () => Promise<{ path: string; preview: string }>
   takeSelectiveScreenshot: () => Promise<{ path: string; preview: string; cancelled?: boolean }>

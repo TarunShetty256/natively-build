@@ -31,6 +31,7 @@ interface ElectronAPI {
   onSolutionSuccess: (callback: (data: any) => void) => () => void
 
   onUnauthorized: (callback: () => void) => () => void
+  onMissingKeys: (callback: () => void) => () => void
   onDebugError: (callback: (error: string) => void) => () => void
   takeScreenshot: () => Promise<void>
   takeSelectiveScreenshot: () => Promise<{ path: string; preview: string; cancelled?: boolean }>
@@ -427,6 +428,13 @@ contextBridge.exposeInMainWorld("electronAPI", {
     ipcRenderer.on(PROCESSING_EVENTS.UNAUTHORIZED, subscription)
     return () => {
       ipcRenderer.removeListener(PROCESSING_EVENTS.UNAUTHORIZED, subscription)
+    }
+  },
+  onMissingKeys: (callback: () => void) => {
+    const subscription = () => callback()
+    ipcRenderer.on("missing-keys", subscription)
+    return () => {
+      ipcRenderer.removeListener("missing-keys", subscription)
     }
   },
   moveWindowLeft: () => ipcRenderer.invoke("move-window-left"),

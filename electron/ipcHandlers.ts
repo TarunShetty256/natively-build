@@ -11,11 +11,23 @@ import { AudioDevices } from "./audio/AudioDevices";
 
 import { RECOGNITION_LANGUAGES, AI_RESPONSE_LANGUAGES } from "./config/languages"
 
+let sttReinitTimeout: NodeJS.Timeout | null = null;
+
 export function initializeIpcHandlers(appState: AppState): void {
   const safeHandle = (channel: string, listener: (event: any, ...args: any[]) => Promise<any> | any) => {
     ipcMain.removeHandler(channel);
     ipcMain.handle(channel, listener);
   };
+
+  function safeReconfigureSTT() {
+    if (sttReinitTimeout) clearTimeout(sttReinitTimeout);
+
+    sttReinitTimeout = setTimeout(() => {
+      appState.reconfigureSttProvider().catch((error: Error) => {
+        console.error('[IPC] Debounced STT reconfigure failed:', error);
+      });
+    }, 300);
+  }
 
   const refreshEmbeddingProviders = () => {
     try {
@@ -1125,7 +1137,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       CredentialsManager.getInstance().setSttProvider(provider);
 
       // Reconfigure the audio pipeline to use the new STT provider
-      await appState.reconfigureSttProvider();
+      safeReconfigureSTT();
 
       return { success: true };
     } catch (error: any) {
@@ -1169,6 +1181,10 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setDeepgramApiKey(apiKey);
+
+      // BYOK runtime key update: rebuild STT selection and safely restart streams
+      safeReconfigureSTT();
+
       return { success: true };
     } catch (error: any) {
       console.error("Error saving Deepgram API key:", error);
@@ -1182,7 +1198,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       CredentialsManager.getInstance().setGroqSttModel(model);
 
       // Reconfigure the audio pipeline to use the new model
-      await appState.reconfigureSttProvider();
+      safeReconfigureSTT();
 
       return { success: true };
     } catch (error: any) {
@@ -1219,7 +1235,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       CredentialsManager.getInstance().setAzureRegion(region);
 
       // Reconfigure the pipeline since region changes the endpoint URL
-      await appState.reconfigureSttProvider();
+      safeReconfigureSTT();
 
       return { success: true };
     } catch (error: any) {
@@ -1981,6 +1997,9 @@ export function initializeIpcHandlers(appState: AppState): void {
       // Persist the path for future sessions
       const { CredentialsManager } = require('./services/CredentialsManager');
       CredentialsManager.getInstance().setGoogleServiceAccountPath(filePath);
+
+      // BYOK runtime key update: rebuild STT selection and safely restart streams
+      safeReconfigureSTT();
 
       return { success: true, path: filePath };
     } catch (error: any) {

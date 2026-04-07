@@ -1,6 +1,7 @@
 import { app, BrowserWindow, Tray, Menu, nativeImage, ipcMain, shell, systemPreferences, screen, desktopCapturer } from "electron"
 import path from "path"
 import fs from "fs"
+import { EventEmitter } from "events"
 import { autoUpdater } from "electron-updater"
 if (!app.isPackaged) {
   require('dotenv').config();
@@ -37,6 +38,7 @@ const getLogFile = (): string | null => {
 const originalLog = console.log;
 const originalWarn = console.warn;
 const originalError = console.error;
+let warnedNoSTT = false;
 
 /** Maximum log file size before rotation (10 MB). */
 const LOG_MAX_BYTES = 10 * 1024 * 1024;
@@ -227,6 +229,7 @@ export class AppState {
   private _dockReassertTimers: NodeJS.Timeout[] = []; // Re-assert dock-hidden state after show+focus
   private _ollamaBootstrapPromise: Promise<void> | null = null;
   private screenshotCaptureInProgress: boolean = false;
+  private hasSentMissingKeysToast: boolean = false;
 
 
   // Processing events
@@ -460,6 +463,55 @@ export class AppState {
 
   private broadcastMeetingState(): void {
     this.broadcast('meeting-state-changed', { isActive: this.isMeetingActive });
+  }
+
+  private hasAnyConfiguredApiKey(): boolean {
+    const { CredentialsManager } = require('./services/CredentialsManager');
+    const cm = CredentialsManager.getInstance();
+
+    const hasValue = (value?: string): boolean => typeof value === 'string' && value.trim().length > 0;
+
+    // AI providers
+    if (
+      hasValue(cm.getGeminiApiKey()) ||
+      hasValue(cm.getGroqApiKey()) ||
+      hasValue(cm.getOpenaiApiKey()) ||
+      hasValue(cm.getClaudeApiKey()) ||
+      hasValue(process.env.GEMINI_API_KEY) ||
+      hasValue(process.env.GROQ_API_KEY) ||
+      hasValue(process.env.OPENAI_API_KEY) ||
+      hasValue(process.env.CLAUDE_API_KEY)
+    ) {
+      return true;
+    }
+
+    // Voice/STT providers
+    if (
+      hasValue(cm.getDeepgramApiKey()) ||
+      hasValue(cm.getGroqSttApiKey()) ||
+      hasValue(cm.getOpenAiSttApiKey()) ||
+      hasValue(cm.getElevenLabsApiKey()) ||
+      hasValue(cm.getAzureApiKey()) ||
+      hasValue(cm.getIbmWatsonApiKey()) ||
+      hasValue(cm.getSonioxApiKey()) ||
+      hasValue(cm.getGoogleServiceAccountPath()) ||
+      hasValue(process.env.DEEPGRAM_API_KEY) ||
+      hasValue(process.env.GOOGLE_APPLICATION_CREDENTIALS)
+    ) {
+      return true;
+    }
+
+    return false;
+  }
+
+  private notifyMissingKeysIfNeeded(): void {
+    if (this.hasSentMissingKeysToast || this.hasAnyConfiguredApiKey()) {
+      return;
+    }
+
+    this.hasSentMissingKeysToast = true;
+    this.getWindowHelper().getLauncherWindow()?.webContents.send('missing-keys');
+    this.getWindowHelper().getOverlayWindow()?.webContents.send('missing-keys');
   }
 
   private async bootstrapOllamaEmbeddings() {
@@ -771,73 +823,51 @@ export class AppState {
 
   private createSTTProvider(speaker: 'interviewer' | 'user'): STTProvider {
     const { CredentialsManager } = require('./services/CredentialsManager');
-    const sttProvider = CredentialsManager.getInstance().getSttProvider();
-    const sttLanguage = CredentialsManager.getInstance().getSttLanguage();
+    const credentialsManager = CredentialsManager.getInstance();
+    const sttLanguage = credentialsManager.getSttLanguage();
+
+    const deepgramApiKey = (
+      credentialsManager.getDeepgramApiKey() ||
+      process.env.DEEPGRAM_API_KEY ||
+      ''
+    ).trim();
+
+    const googleCredentialsPath = (
+      credentialsManager.getGoogleServiceAccountPath() ||
+      process.env.GOOGLE_APPLICATION_CREDENTIALS ||
+      ''
+    ).trim();
+
+    const createDisabledSttProvider = (): STTProvider => {
+      const disabled = new EventEmitter() as STTProvider;
+      (disabled as any).start = () => {};
+      (disabled as any).stop = () => {};
+      (disabled as any).write = (_chunk: Buffer) => {};
+      (disabled as any).setSampleRate = (_rate: number) => {};
+      (disabled as any).setRecognitionLanguage = (_key: string) => {};
+      (disabled as any).setCredentials = (_path: string) => {};
+      (disabled as any).finalize = () => {};
+      (disabled as any).setAudioChannelCount = (_count: number) => {};
+      (disabled as any).notifySpeechEnded = () => {};
+      return disabled;
+    };
 
     let stt: STTProvider;
 
-    if (sttProvider === 'deepgram') {
-      const apiKey = CredentialsManager.getInstance().getDeepgramApiKey();
-      if (apiKey) {
-        console.log(`[Main] Using DeepgramStreamingSTT for ${speaker}`);
-        stt = new DeepgramStreamingSTT(apiKey);
-      } else {
-        console.warn(`[Main] No API key for Deepgram STT, falling back to GoogleSTT`);
-        stt = new GoogleSTT();
-      }
-    } else if (sttProvider === 'soniox') {
-      const apiKey = CredentialsManager.getInstance().getSonioxApiKey();
-      if (apiKey) {
-        console.log(`[Main] Using SonioxStreamingSTT for ${speaker}`);
-        stt = new SonioxStreamingSTT(apiKey);
-      } else {
-        console.warn(`[Main] No API key for Soniox STT, falling back to GoogleSTT`);
-        stt = new GoogleSTT();
-      }
-    } else if (sttProvider === 'elevenlabs') {
-      const apiKey = CredentialsManager.getInstance().getElevenLabsApiKey();
-      if (apiKey) {
-        console.log(`[Main] Using ElevenLabsStreamingSTT for ${speaker}`);
-        stt = new ElevenLabsStreamingSTT(apiKey);
-      } else {
-        console.warn(`[Main] No API key for ElevenLabs STT, falling back to GoogleSTT`);
-        stt = new GoogleSTT();
-      }
-    } else if (sttProvider === 'openai') {
-      // OpenAI: WebSocket Realtime (gpt-4o-transcribe → gpt-4o-mini-transcribe) with whisper-1 REST fallback
-      const apiKey = CredentialsManager.getInstance().getOpenAiSttApiKey();
-      if (apiKey) {
-        console.log(`[Main] Using OpenAIStreamingSTT (WebSocket+REST fallback) for ${speaker}`);
-        stt = new OpenAIStreamingSTT(apiKey);
-      } else {
-        console.warn(`[Main] No API key for OpenAI STT, falling back to GoogleSTT`);
-        stt = new GoogleSTT();
-      }
-    } else if (sttProvider === 'groq' || sttProvider === 'azure' || sttProvider === 'ibmwatson') {
-      let apiKey: string | undefined;
-      let region: string | undefined;
-      let modelOverride: string | undefined;
-
-      if (sttProvider === 'groq') {
-        apiKey = CredentialsManager.getInstance().getGroqSttApiKey();
-        modelOverride = CredentialsManager.getInstance().getGroqSttModel();
-      } else if (sttProvider === 'azure') {
-        apiKey = CredentialsManager.getInstance().getAzureApiKey();
-        region = CredentialsManager.getInstance().getAzureRegion();
-      } else if (sttProvider === 'ibmwatson') {
-        apiKey = CredentialsManager.getInstance().getIbmWatsonApiKey();
-        region = CredentialsManager.getInstance().getIbmWatsonRegion();
-      }
-
-      if (apiKey) {
-        console.log(`[Main] Using RestSTT (${sttProvider}) for ${speaker}`);
-        stt = new RestSTT(sttProvider, apiKey, modelOverride, region);
-      } else {
-        console.warn(`[Main] No API key for ${sttProvider} STT, falling back to GoogleSTT`);
-        stt = new GoogleSTT();
-      }
-    } else {
+    if (deepgramApiKey) {
+      console.log('[STT] Using Deepgram (BYOK)');
+      stt = new DeepgramStreamingSTT(deepgramApiKey);
+    } else if (googleCredentialsPath) {
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = googleCredentialsPath;
+      console.log('[STT] Using Google (BYOK)');
       stt = new GoogleSTT();
+    } else {
+      if (!warnedNoSTT) {
+        console.warn('[STT] No provider available (BYOK mode)');
+        warnedNoSTT = true;
+      }
+      console.warn('[STT] No STT provider available');
+      stt = createDisabledSttProvider();
     }
 
     stt.setRecognitionLanguage(sttLanguage);
@@ -898,7 +928,11 @@ export class AppState {
       if (stt instanceof DeepgramStreamingSTT) return;
 
       // Attempt to switch to Deepgram if a key is available
-      const deepgramKey = CredentialsManager.getInstance().getDeepgramApiKey();
+      const deepgramKey = (
+        CredentialsManager.getInstance().getDeepgramApiKey() ||
+        process.env.DEEPGRAM_API_KEY ||
+        ''
+      ).trim();
       if (!deepgramKey) {
         console.warn('[Main] Cannot switch to Deepgram: no API key available');
         return;
@@ -1255,6 +1289,7 @@ export class AppState {
     // Emit session reset to clear UI state immediately
     this.getWindowHelper().getOverlayWindow()?.webContents.send('session-reset');
     this.getWindowHelper().getLauncherWindow()?.webContents.send('session-reset');
+    this.notifyMissingKeysIfNeeded();
 
     // ★ ASYNC AUDIO INIT: Return INSTANTLY so the IPC response goes back
     // to the renderer immediately, allowing the UI to switch to overlay
