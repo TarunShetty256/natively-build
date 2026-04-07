@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
-import { MessageSquare, Link, Camera, Zap, Heart, User } from 'lucide-react';
+import { MessageSquare, Link, Camera, Zap, Heart, User, Eye, PointerOff, ArrowUp, ArrowDown, ArrowLeft, ArrowRight } from 'lucide-react';
 import { useShortcuts } from '../hooks/useShortcuts';
 import { useResolvedTheme } from '../hooks/useResolvedTheme';
+import { getPlatformShortcut } from '../utils/platformUtils';
 
 const SettingsPopup = () => {
     const { shortcuts } = useShortcuts();
@@ -337,12 +338,87 @@ const SettingsPopup = () => {
                 {/* Show/Hide Natively */}
                 <div className={`flex items-center justify-between px-3 py-2 rounded-lg transition-colors duration-200 group interaction-base interaction-press ${itemHoverClass}`}>
                     <div className="flex items-center gap-3">
-                        <MessageSquare className={`w-3.5 h-3.5 transition-colors ${iconInactiveClass}`} />
+                        <Eye className={`w-3.5 h-3.5 transition-colors ${iconInactiveClass}`} />
                         <span className={`text-[12px] transition-colors ${labelInactiveClass}`}>Show/Hide</span>
                     </div>
                     <div className="flex gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
                         {/* Dynamic Keys for Toggle Visibility */}
-                        {(shortcuts.toggleVisibility || ['⌘', 'B']).map((key, index) => (
+                        {(shortcuts.toggleVisibility || getPlatformShortcut(['⌘', 'B'])).map((key, index) => (
+                            <div key={index} className={`px-1.5 py-0.5 rounded border text-[10px] font-medium min-w-[20px] text-center ${shortcutKeyClass}`}>
+                                {key}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Toggle Mouse Passthrough */}
+                <div className={`flex items-center justify-between px-3 py-2 rounded-lg transition-colors duration-200 group interaction-base interaction-press ${itemHoverClass}`}>
+                    <div className="flex items-center gap-3">
+                        <PointerOff className={`w-3.5 h-3.5 transition-colors ${iconInactiveClass}`} />
+                        <span className={`text-[12px] transition-colors ${labelInactiveClass}`}>Mouse Pass-Through</span>
+                    </div>
+                    <div className="flex gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
+                        {(shortcuts.toggleMousePassthrough || getPlatformShortcut(['⌘', '⇧', 'B'])).map((key, index) => (
+                            <div key={index} className={`px-1.5 py-0.5 rounded border text-[10px] font-medium min-w-[20px] text-center ${shortcutKeyClass}`}>
+                                {key}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Move Window Up */}
+                <div className={`flex items-center justify-between px-3 py-2 rounded-lg transition-colors duration-200 group interaction-base interaction-press ${itemHoverClass}`}>
+                    <div className="flex items-center gap-3">
+                        <ArrowUp className={`w-3.5 h-3.5 transition-colors ${iconInactiveClass}`} />
+                        <span className={`text-[12px] transition-colors ${labelInactiveClass}`}>Move Up</span>
+                    </div>
+                    <div className="flex gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
+                        {(shortcuts.moveWindowUp || getPlatformShortcut(['⌘', '⇧', '↑'])).map((key, index) => (
+                            <div key={index} className={`px-1.5 py-0.5 rounded border text-[10px] font-medium min-w-[20px] text-center ${shortcutKeyClass}`}>
+                                {key}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Move Window Down */}
+                <div className={`flex items-center justify-between px-3 py-2 rounded-lg transition-colors duration-200 group interaction-base interaction-press ${itemHoverClass}`}>
+                    <div className="flex items-center gap-3">
+                        <ArrowDown className={`w-3.5 h-3.5 transition-colors ${iconInactiveClass}`} />
+                        <span className={`text-[12px] transition-colors ${labelInactiveClass}`}>Move Down</span>
+                    </div>
+                    <div className="flex gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
+                        {(shortcuts.moveWindowDown || getPlatformShortcut(['⌘', '⇧', '↓'])).map((key, index) => (
+                            <div key={index} className={`px-1.5 py-0.5 rounded border text-[10px] font-medium min-w-[20px] text-center ${shortcutKeyClass}`}>
+                                {key}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Move Window Left */}
+                <div className={`flex items-center justify-between px-3 py-2 rounded-lg transition-colors duration-200 group interaction-base interaction-press ${itemHoverClass}`}>
+                    <div className="flex items-center gap-3">
+                        <ArrowLeft className={`w-3.5 h-3.5 transition-colors ${iconInactiveClass}`} />
+                        <span className={`text-[12px] transition-colors ${labelInactiveClass}`}>Move Left</span>
+                    </div>
+                    <div className="flex gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
+                        {(shortcuts.moveWindowLeft || getPlatformShortcut(['⌘', '⇧', '←'])).map((key, index) => (
+                            <div key={index} className={`px-1.5 py-0.5 rounded border text-[10px] font-medium min-w-[20px] text-center ${shortcutKeyClass}`}>
+                                {key}
+                            </div>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Move Window Right */}
+                <div className={`flex items-center justify-between px-3 py-2 rounded-lg transition-colors duration-200 group interaction-base interaction-press ${itemHoverClass}`}>
+                    <div className="flex items-center gap-3">
+                        <ArrowRight className={`w-3.5 h-3.5 transition-colors ${iconInactiveClass}`} />
+                        <span className={`text-[12px] transition-colors ${labelInactiveClass}`}>Move Right</span>
+                    </div>
+                    <div className="flex gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
+                        {(shortcuts.moveWindowRight || getPlatformShortcut(['⌘', '⇧', '→'])).map((key, index) => (
                             <div key={index} className={`px-1.5 py-0.5 rounded border text-[10px] font-medium min-w-[20px] text-center ${shortcutKeyClass}`}>
                                 {key}
                             </div>
@@ -358,7 +434,7 @@ const SettingsPopup = () => {
                     </div>
                     <div className="flex gap-1 opacity-60 group-hover:opacity-100 transition-opacity">
                         {/* Dynamic Keys for Take Screenshot */}
-                        {(shortcuts.takeScreenshot || ['⌘', 'H']).map((key, index) => (
+                        {(shortcuts.takeScreenshot || getPlatformShortcut(['⌘', 'H'])).map((key, index) => (
                             <div key={index} className={`px-1.5 py-0.5 rounded border text-[10px] font-medium min-w-[20px] text-center ${shortcutKeyClass}`}>
                                 {key}
                             </div>
