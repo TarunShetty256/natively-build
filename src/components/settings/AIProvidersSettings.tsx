@@ -16,6 +16,8 @@ interface ModelOption {
     name: string;
 }
 
+type ProviderId = 'gemini' | 'groq' | 'openai' | 'claude';
+
 interface ModelSelectProps {
     value: string;
     options: ModelOption[];
@@ -112,6 +114,32 @@ export const AIProvidersSettings: React.FC = () => {
 
     // --- Dynamic Model Discovery ---
     const [preferredModels, setPreferredModels] = useState<Record<string, string>>({});
+    const [discoveredModels, setDiscoveredModels] = useState<Record<ProviderId, ModelOption[]>>({
+        gemini: [],
+        groq: [],
+        openai: [],
+        claude: [],
+    });
+
+    const mergeDiscoveredModels = (provider: ProviderId, models: { id: string; label: string }[]) => {
+        const normalized = models.map((m) => ({ id: m.id, name: m.label || prettifyModelId(m.id) }));
+        setDiscoveredModels(prev => ({ ...prev, [provider]: normalized }));
+    };
+
+    const loadDiscoveredModels = async (providers: ProviderId[]) => {
+        await Promise.all(providers.map(async (provider) => {
+            try {
+                // @ts-ignore
+                const result = await window.electronAPI?.fetchProviderModels?.(provider, '');
+                if (result?.success && result.models) {
+                    mergeDiscoveredModels(provider, result.models);
+                }
+            } catch (e) {
+                // Non-blocking: discovery failures should not break settings load
+                console.warn(`[AIProvidersSettings] Failed to load ${provider} discovered models`, e);
+            }
+        }));
+    };
 
     // Load Initial Data
     useEffect(() => {
@@ -136,6 +164,16 @@ export const AIProvidersSettings: React.FC = () => {
                     if (creds.openaiPreferredModel) pm.openai = creds.openaiPreferredModel;
                     if (creds.claudePreferredModel) pm.claude = creds.claudePreferredModel;
                     setPreferredModels(pm);
+
+                    const providersWithKeys: ProviderId[] = [];
+                    if (creds.hasGeminiKey) providersWithKeys.push('gemini');
+                    if (creds.hasGroqKey) providersWithKeys.push('groq');
+                    if (creds.hasOpenaiKey) providersWithKeys.push('openai');
+                    if (creds.hasClaudeKey) providersWithKeys.push('claude');
+
+                    if (providersWithKeys.length > 0) {
+                        await loadDiscoveredModels(providersWithKeys);
+                    }
                 }
 
                 // @ts-ignore
@@ -428,18 +466,32 @@ export const AIProvidersSettings: React.FC = () => {
                         value={defaultModel}
                         options={(() => {
                             const opts: { id: string; name: string }[] = [];
+                            const seen = new Set<string>();
+                            const addOption = (id: string, name?: string) => {
+                                if (!id || seen.has(id)) return;
+                                seen.add(id);
+                                opts.push({ id, name: name || prettifyModelId(id) });
+                            };
+
                             const providerOrder = ['groq', 'gemini', 'openai', 'claude'] as const;
                             for (const prov of providerOrder) {
                                 const cfg = STANDARD_CLOUD_MODELS[prov];
                                 if (!hasStoredKey[prov as keyof typeof hasStoredKey]) continue;
-                                cfg.ids.forEach((id, i) => opts.push({ id, name: cfg.names[i] }));
+
+                                cfg.ids.forEach((id, i) => addOption(id, cfg.names[i]));
+
+                                const discovered = discoveredModels[prov as ProviderId] || [];
+                                discovered.forEach((model) => addOption(model.id, model.name));
+
                                 const pm = preferredModels[prov as keyof typeof preferredModels];
                                 if (pm && !cfg.ids.includes(pm)) {
-                                    opts.push({ id: pm, name: prettifyModelId(pm) });
+                                    addOption(pm, prettifyModelId(pm));
                                 }
                             }
-                            customProviders.forEach(p => opts.push({ id: p.id, name: p.name }));
-                            ollamaModels.forEach(m => opts.push({ id: `ollama-${m}`, name: `${m} (Local)` }));
+
+                            customProviders.forEach(p => addOption(p.id, p.name));
+                            ollamaModels.forEach(m => addOption(`ollama-${m}`, `${m} (Local)`));
+
                             // Ensure current default model always appears
                             if (defaultModel && !opts.find(o => o.id === defaultModel)) {
                                 opts.unshift({ id: defaultModel, name: prettifyModelId(defaultModel) });
@@ -525,6 +577,7 @@ export const AIProvidersSettings: React.FC = () => {
                         keyPlaceholder="AIzaSy..."
                         keyUrl="https://aistudio.google.com/app/apikey"
                         onPreferredModelChange={(model) => setPreferredModels(prev => ({ ...prev, gemini: model }))}
+                        onModelsFetched={(models) => mergeDiscoveredModels('gemini', models)}
                     />
 
                     {/* Groq */}
@@ -545,6 +598,7 @@ export const AIProvidersSettings: React.FC = () => {
                         keyPlaceholder="gsk_..."
                         keyUrl="https://console.groq.com/keys"
                         onPreferredModelChange={(model) => setPreferredModels(prev => ({ ...prev, groq: model }))}
+                        onModelsFetched={(models) => mergeDiscoveredModels('groq', models)}
                     />
 
                     {/* OpenAI */}
@@ -565,6 +619,7 @@ export const AIProvidersSettings: React.FC = () => {
                         keyPlaceholder="sk-..."
                         keyUrl="https://platform.openai.com/api-keys"
                         onPreferredModelChange={(model) => setPreferredModels(prev => ({ ...prev, openai: model }))}
+                        onModelsFetched={(models) => mergeDiscoveredModels('openai', models)}
                     />
 
                     {/* Claude */}
@@ -585,6 +640,7 @@ export const AIProvidersSettings: React.FC = () => {
                         keyPlaceholder="sk-ant-..."
                         keyUrl="https://console.anthropic.com/settings/keys"
                         onPreferredModelChange={(model) => setPreferredModels(prev => ({ ...prev, claude: model }))}
+                        onModelsFetched={(models) => mergeDiscoveredModels('claude', models)}
                     />
 
                 </div>

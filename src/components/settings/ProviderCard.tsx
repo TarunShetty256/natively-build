@@ -23,6 +23,7 @@ interface ProviderCardProps {
     keyPlaceholder: string;
     keyUrl: string;
     onPreferredModelChange?: (modelId: string) => void;
+    onModelsFetched?: (models: FetchedModel[]) => void;
 }
 
 export const ProviderCard: React.FC<ProviderCardProps> = ({
@@ -42,6 +43,7 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
     keyPlaceholder,
     keyUrl,
     onPreferredModelChange,
+    onModelsFetched,
 }) => {
     const [fetchedModels, setFetchedModels] = useState<FetchedModel[]>([]);
     const [isFetching, setIsFetching] = useState(false);
@@ -100,6 +102,7 @@ export const ProviderCard: React.FC<ProviderCardProps> = ({
 
             if (result?.success && result.models) {
                 setFetchedModels(result.models);
+                onModelsFetched?.(result.models);
                 // If we have a preferred model that exists in the list, keep it; otherwise auto-select first
                 if (result.models.length > 0) {
                     const existsInList = result.models.some((m: FetchedModel) => m.id === selectedModel);
