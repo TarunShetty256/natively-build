@@ -61,6 +61,14 @@ export class WhatToAnswerLLM {
             const deterministicMode = request.deterministicMode || 'answer';
             const intent = (request.intent || request.intentResult?.intent || 'general').trim();
             const isCoding = !!request.isCoding || intent === 'coding';
+            const route =
+                isCoding ? 'coding' :
+                intent === 'behavioral' ? 'behavioral' :
+                intent === 'system_design' ? 'system_design' :
+                'default';
+            const questionLower = latestQuestion.toLowerCase();
+            const isCodeHintRequest = intent === 'coding' && isCoding && /(how to solve|how do i solve|how do we solve|hint|nudge|guide me|stuck|without (full )?code|approach only)/.test(questionLower);
+            const isBrainstormRequest = !isCodeHintRequest && (isCoding || deterministicMode === 'system_design') && /(\bapproach\b|\bideas\b|how would you solve|\bdesign\b)/.test(questionLower);
 
             // Build RECENT MESSAGES block (short-term memory first)
             const recentMessageLines: string[] = [];
@@ -183,8 +191,40 @@ ACTIVE RESPONSE MODE: ${deterministicMode}
 INTENT: ${intent}
 IS_CODING: ${isCoding}
 </intent_metadata>`);
+            contextParts.push(`<route>
+ROUTE: ${route}
+</route>`);
+            contextParts.push(`<route_rules>
+If ROUTE is coding → structured technical answer
+If ROUTE is behavioral → conversational answer
+If ROUTE is system_design → focus on scalability + tradeoffs
+</route_rules>`);
 
-            if (isCoding) {
+            if (isCodeHintRequest) {
+                contextParts.push(`<code_hint_rules>
+When providing a hint:
+- Do NOT give full code
+- Do not reveal final solution or full implementation.
+- Give only direction and key idea
+- Help the candidate think, not solve fully
+- Keep it short
+- Guide step-by-step
+</code_hint_rules>`);
+            }
+
+            if (isBrainstormRequest) {
+                contextParts.push(`<brainstorm_rules>
+When brainstorming:
+1) Start with brute force
+2) Explain why it's inefficient
+3) Provide optimized approach
+4) Mention complexity
+
+Keep it concise.
+</brainstorm_rules>`);
+            }
+
+            if (isCoding && !isCodeHintRequest) {
                 contextParts.push(`<coding_response_rules>
 When IS_CODING is true, use this exact order:
 1) One short line: direct approach summary.
