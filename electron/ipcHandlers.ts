@@ -725,7 +725,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const llmHelper = appState.processingHelper.getLLMHelper();
       return {
-        provider: llmHelper.getCurrentProvider(),
+        provider: llmHelper.getActiveProvider ? llmHelper.getActiveProvider() : llmHelper.getCurrentProvider(),
         model: llmHelper.getCurrentModel(),
         isOllama: llmHelper.isUsingOllama()
       };
@@ -750,6 +750,7 @@ export function initializeIpcHandlers(appState: AppState): void {
     try {
       const llmHelper = appState.processingHelper.getLLMHelper();
       await llmHelper.switchToOllama(model, url);
+      appState.getIntelligenceManager().reinitializeLLMs('model provider change');
       return { success: true };
     } catch (error: any) {
       // console.error("Error switching to Ollama:", error);
@@ -805,6 +806,8 @@ export function initializeIpcHandlers(appState: AppState): void {
         appState.resetMissingKeysToastFlag();
       }
 
+      appState.getIntelligenceManager().reinitializeLLMs(apiKey ? 'credential update' : 'model provider change');
+
       return { success: true };
     } catch (error: any) {
       // console.error("Error switching to Gemini:", error);
@@ -823,12 +826,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       const llmHelper = appState.processingHelper.getLLMHelper();
       llmHelper.setApiKey(apiKey);
 
-      // CQ-06 fix: cancel any in-flight LLM stream before swapping LLM clients.
-      // Use resetEngine() (NOT reset()) so session transcript is preserved mid-meeting.
-      // initializeLLMs() now also calls engine.reset() internally for double-safety.
-      appState.getIntelligenceManager().resetEngine();
-      // Re-init IntelligenceManager
-      appState.getIntelligenceManager().initializeLLMs();
+      // Cancel in-flight streams and re-create mode LLMs after key rotation.
+      appState.getIntelligenceManager().reinitializeLLMs('credential update');
 
       // Re-resolve embedding providers so key rotation/removal takes effect immediately.
       refreshEmbeddingProviders();
@@ -850,10 +849,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       const llmHelper = appState.processingHelper.getLLMHelper();
       llmHelper.setGroqApiKey(apiKey);
 
-      // CQ-06 fix: cancel in-flight stream before re-init (engine only, not session)
-      appState.getIntelligenceManager().resetEngine();
-      // Re-init IntelligenceManager
-      appState.getIntelligenceManager().initializeLLMs();
+      // Cancel in-flight streams and re-create mode LLMs after key rotation.
+      appState.getIntelligenceManager().reinitializeLLMs('credential update');
 
       return { success: true };
     } catch (error: any) {
@@ -872,10 +869,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       const llmHelper = appState.processingHelper.getLLMHelper();
       llmHelper.setOpenaiApiKey(apiKey);
 
-      // CQ-06 fix: cancel in-flight stream before re-init (engine only, not session)
-      appState.getIntelligenceManager().resetEngine();
-      // Re-init IntelligenceManager
-      appState.getIntelligenceManager().initializeLLMs();
+      // Cancel in-flight streams and re-create mode LLMs after key rotation.
+      appState.getIntelligenceManager().reinitializeLLMs('credential update');
 
       // Re-resolve embedding providers so key rotation/removal takes effect immediately.
       refreshEmbeddingProviders();
@@ -897,10 +892,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       const llmHelper = appState.processingHelper.getLLMHelper();
       llmHelper.setClaudeApiKey(apiKey);
 
-      // CQ-06 fix: cancel in-flight stream before re-init (engine only, not session)
-      appState.getIntelligenceManager().resetEngine();
-      // Re-init IntelligenceManager
-      appState.getIntelligenceManager().initializeLLMs();
+      // Cancel in-flight streams and re-create mode LLMs after key rotation.
+      appState.getIntelligenceManager().reinitializeLLMs('credential update');
 
       return { success: true };
     } catch (error: any) {
@@ -988,8 +981,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       const llmHelper = appState.processingHelper.getLLMHelper();
       await llmHelper.switchToCustom(provider);
 
-      // Re-init IntelligenceManager (optional, but good for consistency)
-      appState.getIntelligenceManager().initializeLLMs();
+      // Provider switch requires controlled engine re-initialization.
+      appState.getIntelligenceManager().reinitializeLLMs('model provider change');
 
       return { success: true };
     } catch (error: any) {
@@ -1044,8 +1037,8 @@ export function initializeIpcHandlers(appState: AppState): void {
       const llmHelper = appState.processingHelper.getLLMHelper();
       await llmHelper.switchToCurl(provider);
 
-      // Re-init IntelligenceManager (optional, but good for consistency)
-      appState.getIntelligenceManager().initializeLLMs();
+      // Provider switch requires controlled engine re-initialization.
+      appState.getIntelligenceManager().reinitializeLLMs('model provider change');
 
       return { success: true };
     } catch (error: any) {
@@ -1571,8 +1564,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       llmHelper.setModel(modelId, allProviders);
 
       // Ensure model change takes effect immediately during active meetings.
-      appState.getIntelligenceManager().resetEngine();
-      appState.getIntelligenceManager().initializeLLMs();
+      appState.getIntelligenceManager().reinitializeLLMs('model provider change');
 
       // Close the selector window if open
       appState.modelSelectorWindowHelper.hideWindow();
@@ -1612,8 +1604,7 @@ export function initializeIpcHandlers(appState: AppState): void {
       llmHelper.setModel(modelId, allProviders);
 
       // Ensure runtime switching is immediate even if a meeting is in progress.
-      appState.getIntelligenceManager().resetEngine();
-      appState.getIntelligenceManager().initializeLLMs();
+      appState.getIntelligenceManager().reinitializeLLMs('model provider change');
 
       // Close the selector window if open
       appState.modelSelectorWindowHelper.hideWindow();

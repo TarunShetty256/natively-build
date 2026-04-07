@@ -79,9 +79,8 @@ export class ProcessingHelper {
       this.llmHelper.setClaudeApiKey(claudeKey);
     }
 
-    // CRITICAL: Re-initialize IntelligenceManager now that keys are loaded
-    // This fixes the issue where buttons don't work in production because of late key loading
-    this.appState.getIntelligenceManager().initializeLLMs();
+    // IntelligenceEngine now initializes once during app startup and reuses
+    // the same helper instance; avoid forcing a second startup init here.
 
     // CRITICAL: Initialize RAGManager (Embeddings) with loaded keys
     // This fixes "RAG unavailable" in production where process.env is empty

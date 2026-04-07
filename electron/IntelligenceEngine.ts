@@ -37,6 +37,11 @@ interface ModeDetectionMetadata {
     isCoding: boolean;
 }
 
+interface LLMInitializationOptions {
+    force?: boolean;
+    reason?: string;
+}
+
 function detectModeMetadata(input: string): ModeDetectionMetadata {
     const text = (input || '').toLowerCase();
 
@@ -203,6 +208,7 @@ export interface IntelligenceModeEvents {
 export class IntelligenceEngine extends EventEmitter {
     // Mode state
     private activeMode: IntelligenceMode = 'idle';
+    private isInitialized: boolean = false;
 
     // Mode-specific LLMs
     private answerLLM: AnswerLLM | null = null;
@@ -344,7 +350,7 @@ export class IntelligenceEngine extends EventEmitter {
         mode: Mode,
         operation: () => Promise<ModeGenerationResult>
     ): Promise<ModeGenerationResult> {
-        const currentProvider = this.llmHelper.getCurrentProvider();
+        const currentProvider = this.llmHelper.getActiveProvider?.() || this.llmHelper.getCurrentProvider();
         const originalModel = this.llmHelper.getCurrentModel();
 
         if (currentProvider !== 'gemini' || !this.canOverrideModel(originalModel)) {
@@ -614,8 +620,21 @@ export class IntelligenceEngine extends EventEmitter {
      * Initialize or Re-Initialize mode-specific LLMs with shared Gemini client and Groq client
      * Must be called after API keys are updated.
      */
-    initializeLLMs(): void {
-        console.log(`[IntelligenceEngine] Initializing LLMs with LLMHelper`);
+    initializeLLMs(options: LLMInitializationOptions = {}): void {
+        const { force = false, reason } = options;
+
+        if (this.isInitialized && !force) {
+            console.log('[IntelligenceEngine] Already initialized, skipping');
+            return;
+        }
+
+        if (this.isInitialized && force) {
+            const reasonSuffix = reason ? ` due to ${reason}` : '';
+            console.log(`[IntelligenceEngine] Reinitializing${reasonSuffix}`);
+        } else {
+            console.log('[IntelligenceEngine] Initializing...');
+        }
+
         this.answerLLM = new AnswerLLM(this.llmHelper);
         this.assistLLM = new AssistLLM(this.llmHelper);
         this.clarifyLLM = new ClarifyLLM(this.llmHelper);
@@ -628,10 +647,13 @@ export class IntelligenceEngine extends EventEmitter {
 
         // Sync RecapLLM reference to SessionTracker for epoch compaction
         this.session.setRecapLLM(this.recapLLM);
+        const activeProvider = this.llmHelper.getActiveProvider?.() || this.llmHelper.getCurrentProvider();
+        console.log(`[LLM] Active Provider: ${activeProvider}`);
+        this.isInitialized = true;
     }
 
-    reinitializeLLMs(): void {
-        this.initializeLLMs();
+    reinitializeLLMs(reason: string = 'credential update'): void {
+        this.initializeLLMs({ force: true, reason });
     }
 
     // ============================================

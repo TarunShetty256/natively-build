@@ -26,6 +26,8 @@ interface OllamaResponse {
   done: boolean
 }
 
+type LLMProviderName = 'ollama' | 'gemini' | 'groq' | 'openai' | 'claude' | 'custom' | 'curl' | 'none';
+
 // Model constant for Gemini 3 Flash
 const GEMINI_FLASH_MODEL = "gemini-3.1-flash-lite-preview"
 const GEMINI_PRO_MODEL = "gemini-3.1-pro-preview"
@@ -251,6 +253,56 @@ export class LLMHelper {
 
   private isGeminiModel(modelId: string): boolean {
     return modelId.startsWith("gemini-") || modelId.startsWith("models/");
+  }
+
+  private getProviderFromModelId(modelId: string): Exclude<LLMProviderName, 'custom' | 'curl' | 'none'> | null {
+    if (!modelId) return null;
+    if (this.isOpenAiModel(modelId)) return 'openai';
+    if (this.isClaudeModel(modelId)) return 'claude';
+    if (this.isGroqModel(modelId)) return 'groq';
+    if (this.isGeminiModel(modelId)) return 'gemini';
+    return null;
+  }
+
+  private inferProviderFromAttemptName(label: string): LLMProviderName {
+    const normalized = (label || '').toLowerCase();
+    if (normalized.includes('ollama')) return 'ollama';
+    if (normalized.includes('openai')) return 'openai';
+    if (normalized.includes('claude')) return 'claude';
+    if (normalized.includes('groq')) return 'groq';
+    if (normalized.includes('gemini')) return 'gemini';
+    if (normalized.includes('curl')) return 'curl';
+    if (normalized.includes('custom')) return 'custom';
+    return 'none';
+  }
+
+  private resolveProviderForRoute(routeUseOllama: boolean, routedModelId: string): LLMProviderName {
+    if (routeUseOllama || this.useOllama) return 'ollama';
+    if (this.activeCurlProvider) return 'curl';
+    if (this.customProvider) return 'custom';
+
+    const routed = this.getProviderFromModelId(routedModelId);
+    if (routed) return routed;
+    return this.getActiveProvider();
+  }
+
+  public getActiveProvider(): LLMProviderName {
+    if (this.useOllama) return 'ollama';
+    if (this.activeCurlProvider) return 'curl';
+    if (this.customProvider) return 'custom';
+
+    const selectedProvider = this.getProviderFromModelId(this.currentModelId);
+    if (selectedProvider === 'openai' && this.openaiClient) return 'openai';
+    if (selectedProvider === 'claude' && this.claudeClient) return 'claude';
+    if (selectedProvider === 'groq' && this.groqClient) return 'groq';
+    if (selectedProvider === 'gemini' && this.client) return 'gemini';
+
+    if (this.groqClient) return 'groq';
+    if (this.openaiClient) return 'openai';
+    if (this.claudeClient) return 'claude';
+    if (this.client) return 'gemini';
+
+    return 'none';
   }
   // ---------------------------
 
@@ -1088,7 +1140,9 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
       const route = await this.resolveRoutedModel(message, context, isMultimodal);
       const routedModelId = route.modelId || this.currentModelId;
+      const routedProvider = this.resolveProviderForRoute(route.useOllama, routedModelId);
       console.log(`[LLMHelper] Dynamic route (non-stream): tier=${route.tier}, target=${route.useOllama ? `ollama:${this.ollamaModel}` : routedModelId}`);
+      console.log(`[LLMHelper] Using provider: ${routedProvider}`);
 
       // GROQ FAST TEXT OVERRIDE (Text-Only)
       if (this.groqFastTextMode && !isMultimodal && this.groqClient) {
@@ -1113,6 +1167,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       const claudeSystemPrompt = skipSystemPrompt ? undefined : this.injectLanguageInstruction(CLAUDE_SYSTEM_PROMPT);
 
       if (this.useOllama || route.useOllama) {
+        console.log(`[LLM RESPONSE FROM]: ollama`);
         return await this.withTimeout(
           this.callOllama(combinedMessages.gemini, imagePaths?.[0]),
           OLLAMA_NON_STREAM_TIMEOUT,
@@ -1121,6 +1176,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
 
       if (this.activeCurlProvider) {
+        console.log(`[LLM RESPONSE FROM]: curl`);
         return await this.withTimeout(
           this.chatWithCurl(message, skipSystemPrompt ? undefined : this.injectLanguageInstruction(CUSTOM_SYSTEM_PROMPT), imagePaths?.[0]),
           FIRST_TOKEN_TIMEOUT,
@@ -1129,6 +1185,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       }
 
       if (this.customProvider) {
+        console.log(`[LLM RESPONSE FROM]: custom`);
         console.log(`[LLMHelper] Using Custom Provider: ${this.customProvider.name}`);
         // For non-streaming call — use rich CUSTOM prompts since custom providers can be cloud models
         const customSystemPrompt = skipSystemPrompt ? "" : this.injectLanguageInstruction(CUSTOM_SYSTEM_PROMPT);
@@ -1149,6 +1206,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
       // --- Direct Routing based on Selected Model ---
       if (this.isOpenAiModel(routedModelId) && this.openaiClient) {
+        console.log(`[LLM RESPONSE FROM]: openai`);
         return await this.withTimeout(
           this.generateWithOpenai(userContent, openaiSystemPrompt, imagePaths, routedModelId),
           FIRST_TOKEN_TIMEOUT,
@@ -1156,6 +1214,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         );
       }
       if (this.isClaudeModel(routedModelId) && this.claudeClient) {
+        console.log(`[LLM RESPONSE FROM]: claude`);
         return await this.withTimeout(
           this.generateWithClaude(userContent, claudeSystemPrompt, imagePaths, routedModelId),
           FIRST_TOKEN_TIMEOUT,
@@ -1163,6 +1222,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         );
       }
       if (this.isGroqModel(routedModelId) && this.groqClient) {
+        console.log(`[LLM RESPONSE FROM]: groq`);
         if (isMultimodal && imagePaths) {
           return await this.withTimeout(
             this.generateWithGroqMultimodal(userContent, imagePaths, openaiSystemPrompt),
@@ -1263,6 +1323,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
           );
           if (rawResponse && rawResponse.trim().length > 0) {
             console.log(`[LLMHelper] ✅ ${provider.name} succeeded`);
+            console.log(`[LLM RESPONSE FROM]: ${this.inferProviderFromAttemptName(provider.name)}`);
             return this.processResponse(rawResponse);
           }
           console.warn(`[LLMHelper] ⚠️ ${provider.name} returned empty response`);
@@ -2056,6 +2117,8 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     if (this.useOllama) {
       try {
+        console.log(`[LLMHelper] Using provider: ollama`);
+        console.log(`[LLM RESPONSE FROM]: ollama`);
         const response = await this.withTimeout(
           this.callOllama(combinedMessages.gemini, imagePaths?.[0]),
           OLLAMA_NON_STREAM_TIMEOUT,
@@ -2168,8 +2231,10 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         const provider = providers[i];
         try {
           console.log(`[LLMHelper] ${rotation === 0 ? '🚀' : '🔁'} Attempting ${provider.name}...`);
+          console.log(`[LLMHelper] Using provider: ${this.inferProviderFromAttemptName(provider.name)}`);
           yield* this.streamWithRealtimeFallback(() => provider.execute());
           console.log(`[LLMHelper] ✅ ${provider.name} stream completed successfully`);
+          console.log(`[LLM RESPONSE FROM]: ${this.inferProviderFromAttemptName(provider.name)}`);
           return; // SUCCESS — exit immediately
         } catch (err: any) {
           console.warn(`[LLMHelper] ⚠️ ${provider.name} failed: ${err.message}`);
@@ -2245,7 +2310,9 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     const route = await this.resolveRoutedModel(message, context, isMultimodal);
     const routedModelId = route.modelId || this.currentModelId;
+    const routedProvider = this.resolveProviderForRoute(route.useOllama, routedModelId);
     console.log(`[LLMHelper] Dynamic route (stream): tier=${route.tier}, target=${route.useOllama ? `ollama:${this.ollamaModel}` : routedModelId}`);
+    console.log(`[LLMHelper] Using provider: ${routedProvider}`);
 
     // GROQ FAST TEXT OVERRIDE (Text-Only)
     if (this.groqFastTextMode && !isMultimodal && this.groqClient) {
@@ -2254,6 +2321,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
         const groqSystem = systemPromptOverride || GROQ_SYSTEM_PROMPT;
         const finalGroqSystem = this.injectLanguageInstruction(groqSystem);
         const groqFullMessage = `${finalGroqSystem}\n\n${userContent}`;
+        console.log(`[LLM RESPONSE FROM]: groq`);
         yield* this.streamWithRealtimeFallback(() => this.streamWithGroq(
           groqFullMessage,
           this.isGroqModel(this.currentModelId) ? this.currentModelId : GROQ_MODEL
@@ -2267,6 +2335,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     // 1. Ollama Streaming
     if (this.useOllama || route.useOllama) {
+      console.log(`[LLM RESPONSE FROM]: ollama`);
       yield* this.streamWithRealtimeFallback(
         () => this.streamWithOllama(message, context, finalSystemPrompt, imagePaths),
         { firstTokenMs: OLLAMA_FIRST_TOKEN_TIMEOUT, idleMs: OLLAMA_STREAM_IDLE_TIMEOUT }
@@ -2277,6 +2346,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     // 2. Custom Provider Streaming (active cURL provider)
     if (this.activeCurlProvider) {
       const activeCurlProvider = this.activeCurlProvider;
+      console.log(`[LLM RESPONSE FROM]: curl`);
       yield* this.streamWithRealtimeFallback(() => this.streamWithCustom(
         message,
         context,
@@ -2289,6 +2359,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     // 2b. CustomProvider (switchToCustom path) — full SSE-capable streaming
     if (this.customProvider) {
+      console.log(`[LLM RESPONSE FROM]: custom`);
       yield* this.streamWithRealtimeFallback(() => this.streamWithCustom(message, context, imagePaths, finalSystemPrompt));
       return;
     }
@@ -2299,6 +2370,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     if (this.isOpenAiModel(routedModelId) && this.openaiClient) {
       const openAiSystem = systemPromptOverride || OPENAI_SYSTEM_PROMPT;
       const finalOpenAiSystem = this.injectLanguageInstruction(openAiSystem);
+      console.log(`[LLM RESPONSE FROM]: openai`);
       if (isMultimodal && imagePaths) {
         yield* this.streamWithRealtimeFallback(() => this.streamWithOpenaiMultimodal(userContent, imagePaths, finalOpenAiSystem, routedModelId));
       } else {
@@ -2311,6 +2383,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
     if (this.isClaudeModel(routedModelId) && this.claudeClient) {
       const claudeSystem = systemPromptOverride || CLAUDE_SYSTEM_PROMPT;
       const finalClaudeSystem = this.injectLanguageInstruction(claudeSystem);
+      console.log(`[LLM RESPONSE FROM]: claude`);
       if (isMultimodal && imagePaths) {
         yield* this.streamWithRealtimeFallback(() => this.streamWithClaudeMultimodal(userContent, imagePaths, finalClaudeSystem, routedModelId));
       } else {
@@ -2321,6 +2394,7 @@ This rule overrides ALL other instructions including formatting, brevity, or out
 
     // Groq (Text + Multimodal)
     if (this.isGroqModel(routedModelId) && this.groqClient) {
+      console.log(`[LLM RESPONSE FROM]: groq`);
       if (isMultimodal && imagePaths) {
         // Route multimodal to Groq Llama 4 Scout (vision-capable)
         const groqSystem = systemPromptOverride || OPENAI_SYSTEM_PROMPT;
@@ -2341,12 +2415,14 @@ This rule overrides ALL other instructions including formatting, brevity, or out
       // Direct model use if specified
       if (this.isGeminiModel(routedModelId)) {
         const fullMsg = `${finalSystemPrompt}\n\n${userContent}`;
+        console.log(`[LLM RESPONSE FROM]: gemini`);
         yield* this.streamWithRealtimeFallback(() => this.streamWithGeminiModel(fullMsg, routedModelId, imagePaths));
         return;
       }
 
       // Default Gemini fallback path: real streaming with model fallback (no buffered fake chunking)
       const raceMsg = `${finalSystemPrompt}\n\n${userContent}`;
+      console.log(`[LLM RESPONSE FROM]: gemini`);
       yield* this.streamWithRealtimeFallback(() => this.streamWithGeminiParallelRace(raceMsg, imagePaths));
     } else {
       yield this.getGracefulFallbackMessage();
