@@ -363,11 +363,61 @@ LAST ANSWER (do not repeat verbatim): ${clipped}
                 prompt += `\nUse this experience if relevant:\n${resume}`;
             }
 
-            yield* this.llmHelper.streamChat(fullMessage, imagePaths, undefined, prompt);
+            const timeoutMs = 40000;
+            const timeoutController = new AbortController();
+            const timeoutHandle = setTimeout(() => timeoutController.abort(), timeoutMs);
+            const stream = this.llmHelper.streamChat(fullMessage, imagePaths, undefined, prompt);
+            let hasStreamed = false;
+
+            const fallbackPrefix = 'Let me give a quick structured answer...';
+            const fallbackBasic = isCoding
+                ? 'Approach: break the problem into clear steps, implement the core path first, then cover edge cases. Complexity: prefer linear time and minimal extra space where possible.'
+                : intent === 'behavioral'
+                    ? 'Direct answer: I stay calm, prioritize the highest-impact action, and communicate clearly. Example: in a production incident, I led a focused triage with logs and rollbacks, restored stability quickly, and documented follow-ups. Result: we improved reliability and response speed in later incidents.'
+                    : 'Direct answer: I focus on the core requirement first, execute with a clear structure, and validate results with concrete outcomes.';
+
+            try {
+                while (true) {
+                    const nextChunk = await Promise.race([
+                        stream.next(),
+                        new Promise<IteratorResult<string>>((_, reject) => {
+                            const onAbort = () => {
+                                timeoutController.signal.removeEventListener('abort', onAbort);
+                                reject(new Error('LLM_STREAM_TIMEOUT'));
+                            };
+                            timeoutController.signal.addEventListener('abort', onAbort, { once: true });
+                        })
+                    ]);
+
+                    if (nextChunk.done) {
+                        break;
+                    }
+
+                    // Stream tokens immediately to keep first paint fast.
+                    hasStreamed = true;
+                    yield nextChunk.value;
+                }
+            } catch (streamError) {
+                try {
+                    await stream.return?.(undefined);
+                } catch {
+                    // no-op: best effort cancellation
+                }
+                const msg = (streamError as Error)?.message || 'stream_error';
+                console.warn(`[WhatToAnswerLLM] stream interrupted (${msg}) after ${timeoutMs}ms`);
+                if (!hasStreamed) {
+                    yield fallbackPrefix;
+                    yield fallbackBasic;
+                }
+            } finally {
+                clearTimeout(timeoutHandle);
+            }
 
         } catch (error) {
-            console.error("[WhatToAnswerLLM] Stream failed:", error);
-            throw error;
+            const msg = (error as Error)?.message || 'unknown_error';
+            console.warn(`[WhatToAnswerLLM] stream setup failed: ${msg}`);
+            yield 'Let me give a quick structured answer...';
+            yield 'Direct answer: I will address the core requirement first, give a concrete example, and keep it concise and practical.';
         }
     }
 }
