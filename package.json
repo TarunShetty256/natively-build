@@ -19,7 +19,7 @@
     "start": "npm run app:dev",
     "dist": "npm run app:build",
     "build:native": "node scripts/build-native.js",
-    "rebuild:electron-native": "electron-rebuild -f -w better-sqlite3 -w keytar -w sharp",
+    "rebuild:electron-native": "electron-rebuild -f -w better-sqlite3,keytar,sharp",
     "smoke:native": "node test-worker.js"
   },
   "build": {
