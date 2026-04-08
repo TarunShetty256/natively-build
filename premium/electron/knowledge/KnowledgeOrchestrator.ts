@@ -29,6 +29,8 @@ export class KnowledgeOrchestrator {
     private activeResume: KnowledgeDocument | null = null;
     private activeJD: KnowledgeDocument | null = null;
     private cachedNodes: ContextNode[] = [];
+    private previousContext: { nodeIds: number[] } = { nodeIds: [] };
+    private previousContextHistory: number[][] = [];
 
     // Injected dependencies
     private generateContentFn: ((contents: any[]) => Promise<string>) | null = null;
@@ -354,9 +356,15 @@ export class KnowledgeOrchestrator {
             console.log(`[KnowledgeOrchestrator] Category hints detected: ${categoryHints.join(', ')}`);
         }
 
-        // For PROFILE_DETAIL queries (e.g. "what projects have you worked on?"),
-        // use a higher node limit to retrieve all relevant items
-        const maxNodes = intent === IntentType.PROFILE_DETAIL ? 12 : undefined;
+        const historyWindow = this.previousContextHistory.slice(-3);
+        const historicalNodeIds = historyWindow.reduce<number[]>((acc, ids) => acc.concat(ids), []);
+        const recentNodeIds = new Set<number>([
+            ...this.previousContext.nodeIds,
+            ...historicalNodeIds
+        ]);
+
+        // Hard cap retrieval payload for stable context quality.
+        const maxNodes = 5;
 
         // Get JD required skills for boosting
         let jdRequiredSkills: string[] = [];
@@ -367,15 +375,31 @@ export class KnowledgeOrchestrator {
 
         // Retrieve relevant nodes with JD boost and category hints
         let relevantNodes: ContextNode[] = [];
-        if (this.embedFn && this.cachedNodes.length > 0) {
+        if (this.cachedNodes.length > 0) {
             try {
-                const scoredNodes = await getRelevantNodes(question, this.cachedNodes, this.embedFn, {
+                const embedFn = this.embedFn || (async () => []);
+                const scoredNodes = await getRelevantNodes(question, this.cachedNodes, embedFn, {
                     sourceTypes: [DocType.RESUME, DocType.JD],
                     jdRequiredSkills,
                     categoryHintKeywords: categoryHints.length > 0 ? categoryHints : undefined,
+                    recentNodeIds: Array.from(recentNodeIds),
                     maxNodes
                 });
-                relevantNodes = scoredNodes.map((sn: { node: ContextNode }) => sn.node);
+                relevantNodes = scoredNodes
+                    .slice(0, 5)
+                    .map((sn: { node: ContextNode }) => ({
+                        ...sn.node,
+                        text_content: (sn.node.text_content || '').slice(0, 1200)
+                    }));
+                const currentNodeIds = relevantNodes
+                    .map(node => node.id)
+                    .filter((id): id is number => typeof id === 'number');
+                this.previousContext = { nodeIds: currentNodeIds };
+                this.previousContextHistory.push(currentNodeIds);
+                if (this.previousContextHistory.length > 3) {
+                    this.previousContextHistory.shift();
+                }
+                console.log("[RAG] Selected Nodes:", relevantNodes.map(n => n.title));
             } catch (error: any) {
                 console.warn('[KnowledgeOrchestrator] Relevance scoring failed:', error.message);
             }
@@ -595,6 +619,8 @@ export class KnowledgeOrchestrator {
         this.activeResume = this.db.getDocumentByType(DocType.RESUME);
         this.activeJD = this.db.getDocumentByType(DocType.JD);
         this.cachedNodes = this.db.getAllNodes();
+        this.previousContext = { nodeIds: [] };
+        this.previousContextHistory = [];
         console.log(`[KnowledgeOrchestrator] Cache refreshed: ${this.cachedNodes.length} total nodes across all docs`);
     }
 

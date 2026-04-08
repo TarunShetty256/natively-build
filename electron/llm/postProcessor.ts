@@ -34,14 +34,14 @@ const PREFIXES = [
 /**
  * Clamp response to strict interview copilot constraints
  * @param text - Raw LLM response
- * @param maxSentences - Maximum sentences allowed (default 3)
- * @param maxWords - Maximum words allowed (default 60)
+ * @param maxSentences - Maximum sentences allowed (default 4)
+ * @param maxWords - Maximum words allowed (default 80)
  * @returns Clean, clamped plain text
  */
 export function clampResponse(
     text: string,
-    maxSentences: number = 3,
-    maxWords: number = 60
+    maxSentences: number = 4,
+    maxWords: number = 80
 ): string {
     if (!text || typeof text !== "string") {
         return "";

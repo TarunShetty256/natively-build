@@ -24,6 +24,7 @@ interface KnowledgeContextBundle {
     jobDescription: string;
     company: string;
     hasStructuredContext: boolean;
+    shouldUsePersona: boolean;
 }
 
 interface ModeGenerationResult {
@@ -157,9 +158,10 @@ function detectAutoFollowUpFocus(question: string): string | null {
 function isShortFollowUpPrompt(question: string): boolean {
     const q = (question || '').trim().toLowerCase();
     if (!q) return false;
-    if (q.split(/\s+/).length > 5) return false;
-    if (/^(why|how|edge cases?|what else|details|examples?)\??$/.test(q)) return true;
-    return /^(and|also|then)\??$/.test(q);
+    const wordCount = q.split(/\s+/).filter(Boolean).length;
+    if (wordCount >= 8) return false;
+    // Strict follow-up rule: short question + explicit follow-up keywords.
+    return /(\bwhy\b|\bhow\b|what about|\band\b|edge cases?)/.test(q);
 }
 
 function isRelatedToPreviousQuestion(currentQuestion: string, previousQuestion: string | null): boolean {
@@ -173,16 +175,8 @@ function isRelatedToPreviousQuestion(currentQuestion: string, previousQuestion: 
 }
 
 function isLikelyAutoFollowUp(currentQuestion: string, previousQuestion: string | null): boolean {
-    if (isShortFollowUpPrompt(currentQuestion)) return true;
-
-    const focus = detectAutoFollowUpFocus(currentQuestion);
-    if (focus) return true;
-
-    const q = (currentQuestion || '').trim().toLowerCase();
-    if (!q) return false;
-    if (/^(and|also|then|okay|right|so)\b/.test(q) && q.split(/\s+/).length <= 10) return true;
-
-    return isRelatedToPreviousQuestion(currentQuestion, previousQuestion);
+    if (!previousQuestion) return false;
+    return isShortFollowUpPrompt(currentQuestion);
 }
 
 // Events emitted by IntelligenceEngine
@@ -275,19 +269,57 @@ export class IntelligenceEngine extends EventEmitter {
         return this.responseModeOverride || 'answer';
     }
 
+    private isProUser(): boolean {
+        try {
+            // Runtime-loaded to keep OSS builds resilient when premium modules are absent.
+            const { LicenseManager } = require('../premium/electron/services/LicenseManager');
+            return !!LicenseManager.getInstance().isPremium();
+        } catch {
+            return false;
+        }
+    }
+
     private getKnowledgeContextBundle(): KnowledgeContextBundle {
         const fallbackResume = '[RESUME CONTEXT UNAVAILABLE]';
         const fallbackJD = '[JOB DESCRIPTION CONTEXT UNAVAILABLE]';
         const fallbackCompany = '[COMPANY CONTEXT UNAVAILABLE]';
 
         const knowledgeOrchestrator = this.llmHelper.getKnowledgeOrchestrator?.();
-        const profileData = knowledgeOrchestrator?.getProfileData?.();
-        if (!profileData) {
+        const personaToggleOn = !!knowledgeOrchestrator?.isKnowledgeMode?.();
+        const isProUser = this.isProUser();
+        const preconditionAllowsProfileRead = isProUser && personaToggleOn;
+
+        // Avoid touching resume/JD memory when premium gate preconditions are not met.
+        if (!preconditionAllowsProfileRead) {
+            const resumeExists = false;
+            const shouldUsePersona = isProUser && resumeExists && personaToggleOn;
+            console.log('[DEBUG] PersonaEnabled:', shouldUsePersona);
             return {
                 resume: fallbackResume,
                 jobDescription: fallbackJD,
                 company: fallbackCompany,
-                hasStructuredContext: false
+                hasStructuredContext: false,
+                shouldUsePersona: false
+            };
+        }
+
+        const profileData = knowledgeOrchestrator?.getProfileData?.();
+        const resumeExists = !!profileData && (
+            !!profileData.identity ||
+            (profileData.skills?.length || 0) > 0 ||
+            (profileData.experience?.length || 0) > 0 ||
+            (profileData.projects?.length || 0) > 0
+        );
+        const shouldUsePersona = isProUser && resumeExists && personaToggleOn;
+        console.log('[DEBUG] PersonaEnabled:', shouldUsePersona);
+
+        if (!profileData || !shouldUsePersona) {
+            return {
+                resume: fallbackResume,
+                jobDescription: fallbackJD,
+                company: fallbackCompany,
+                hasStructuredContext: false,
+                shouldUsePersona: false
             };
         }
 
@@ -324,7 +356,8 @@ export class IntelligenceEngine extends EventEmitter {
             resume: JSON.stringify(resumeData),
             jobDescription: jdData ? JSON.stringify(jdData) : fallbackJD,
             company: companyData ? JSON.stringify(companyData) : fallbackCompany,
-            hasStructuredContext: !!profileData.identity
+            hasStructuredContext: !!profileData.identity,
+            shouldUsePersona
         };
     }
 
@@ -835,8 +868,11 @@ export class IntelligenceEngine extends EventEmitter {
                 timestamp: item.timestamp
             }));
 
+            // Avoid previous assistant answer leakage for new questions.
+            const nonAssistantTurns = transcriptTurns.filter(turn => turn.role !== 'assistant');
+
             const extracted = extractLatestQuestionFromTurns(
-                transcriptTurns,
+                nonAssistantTurns,
                 lastInterim?.text || null
             );
 
@@ -848,18 +884,20 @@ export class IntelligenceEngine extends EventEmitter {
 
             const runtimeState = this.stateManager.getState();
             const previousQuestion = this.sessionLastQuestion || runtimeState.lastQuestion;
-            const rawQuestion = explicitQuestion || extracted.question || previousQuestion || '';
+            const rawQuestion = (explicitQuestion || extracted.question || '').trim();
             const isShortFollowUp = isShortFollowUpPrompt(rawQuestion);
-            const resolvedQuestion = (isShortFollowUp && previousQuestion)
+            const autoFollowUp = isShortFollowUp && !!previousQuestion && isLikelyAutoFollowUp(rawQuestion, previousQuestion);
+            const resolvedQuestion = (autoFollowUp && rawQuestion && previousQuestion)
                 ? `${previousQuestion} (${rawQuestion})`
                 : rawQuestion;
-            const inferredQuestion = rawQuestion || 'inferred';
-            const questionWindow = extracted.transcriptWindow || buildQuestionFocusedTranscriptWindow(transcriptTurns, 8);
-            const autoFollowUp = isShortFollowUp || isLikelyAutoFollowUp(rawQuestion, previousQuestion);
+            const inferredQuestion = resolvedQuestion || rawQuestion || 'inferred';
+            const questionWindow = extracted.transcriptWindow || buildQuestionFocusedTranscriptWindow(nonAssistantTurns, 8);
             const followUpFocus = detectAutoFollowUpFocus(rawQuestion);
-            const relatedToPrevious = isShortFollowUp || isRelatedToPreviousQuestion(rawQuestion, previousQuestion);
-            const forceVariation = autoFollowUp || relatedToPrevious;
-            const recentQAPairs = this.stateManager.getRecentQAPairs(5);
+            const relatedToPrevious = autoFollowUp;
+            const forceVariation = autoFollowUp;
+            const recentQAPairs = autoFollowUp ? this.stateManager.getRecentQAPairs(5) : [];
+
+            console.log('[DEBUG] Question:', resolvedQuestion || rawQuestion || '[EMPTY]');
 
             // If this is an inferred request with unchanged source text+context, skip regeneration
             // for a short window to avoid repeating stale answers in a loop.
@@ -902,9 +940,9 @@ export class IntelligenceEngine extends EventEmitter {
                 latestQuestion: resolvedQuestion || 'Please repeat the interviewer question clearly.',
                 transcriptWindow: questionWindow,
                 intentResult,
-                lastAnswer: runtimeState.lastAnswer,
-                previousQuestion: runtimeState.lastQuestion,
-                previousAnswer: runtimeState.lastAnswer,
+                lastAnswer: autoFollowUp ? runtimeState.lastAnswer : null,
+                previousQuestion: autoFollowUp ? runtimeState.lastQuestion : null,
+                previousAnswer: autoFollowUp ? runtimeState.lastAnswer : null,
                 recentQAPairs,
                 isFollowUp: autoFollowUp,
                 followUpFocus,
@@ -913,12 +951,15 @@ export class IntelligenceEngine extends EventEmitter {
                 modeHint: 'what_to_say',
                 isCoding: responseMetadata.isCoding,
                 intent: responseMetadata.intent,
-                resume: knowledgeContext.resume,
-                jobDescription: knowledgeContext.jobDescription,
-                companyContext: knowledgeContext.company,
-                personaEnabled: true,
-                enforceContextAnchors: true
+                resume: knowledgeContext.shouldUsePersona ? knowledgeContext.resume : null,
+                jobDescription: knowledgeContext.shouldUsePersona ? knowledgeContext.jobDescription : null,
+                companyContext: knowledgeContext.shouldUsePersona ? knowledgeContext.company : null,
+                shouldUsePersona: knowledgeContext.shouldUsePersona,
+                personaEnabled: knowledgeContext.shouldUsePersona,
+                enforceContextAnchors: knowledgeContext.shouldUsePersona
             };
+
+            console.log(`[DEBUG] Mode=${detectedMode}, isFollowUp=${autoFollowUp}`);
 
             console.log(`[IntelligenceEngine] Question-focused generation: intent=${responseMetadata.intent}, coding=${responseMetadata.isCoding}, mode=${detectedMode}, source=${extracted.source}${imagePaths?.length ? `, with ${imagePaths.length} image(s)` : ''}`);
 
@@ -973,7 +1014,7 @@ export class IntelligenceEngine extends EventEmitter {
                 return null;
             }
 
-            if (runtimeState.lastAnswer) {
+            if (autoFollowUp && runtimeState.lastAnswer) {
                 fullAnswer = await this.diversifyAnswerIfNeeded(
                     fullAnswer,
                     resolvedQuestion || inferredQuestion,
@@ -984,12 +1025,13 @@ export class IntelligenceEngine extends EventEmitter {
 
             this.session.addAssistantMessage(fullAnswer);
             this.stateManager.setLastAnswer(fullAnswer);
-            if (resolvedQuestion) {
-                this.stateManager.setLastQuestion(resolvedQuestion);
-                this.sessionLastQuestion = resolvedQuestion;
+            const trackedQuestion = rawQuestion || resolvedQuestion;
+            if (trackedQuestion) {
+                this.stateManager.setLastQuestion(trackedQuestion);
+                this.sessionLastQuestion = trackedQuestion;
                 this.sessionLastTimestamp = Date.now();
             }
-            this.stateManager.pushQAPair(resolvedQuestion || inferredQuestion, fullAnswer);
+            this.stateManager.pushQAPair(trackedQuestion || inferredQuestion, fullAnswer);
 
             this.lastWhatToSayInputKey = inputKey;
             this.lastWhatToSayOutput = fullAnswer;

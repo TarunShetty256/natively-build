@@ -2,6 +2,200 @@ import { LLMHelper } from "../LLMHelper";
 import { UNIVERSAL_WHAT_TO_ANSWER_PROMPT } from "./prompts";
 import { IntentResult } from "./IntentClassifier";
 
+const CONTEXT_STOP_WORDS = new Set([
+    'the', 'a', 'an', 'and', 'or', 'to', 'for', 'of', 'in', 'on', 'at', 'is', 'are', 'was', 'were',
+    'be', 'been', 'being', 'it', 'this', 'that', 'with', 'as', 'by', 'from', 'about', 'into', 'your',
+    'you', 'we', 'they', 'them', 'their', 'our', 'us', 'me', 'my', 'i', 'do', 'did', 'does', 'can',
+    'could', 'should', 'would', 'what', 'why', 'how', 'when', 'where', 'which', 'who'
+]);
+
+function tokenize(input: string): string[] {
+    return (input || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s]/g, ' ')
+        .split(/\s+/)
+        .filter(Boolean)
+        .filter(token => token.length >= 3)
+        .filter(token => !CONTEXT_STOP_WORDS.has(token));
+}
+
+function countTokenHits(text: string, tokens: Set<string>): number {
+    const hay = (text || '').toLowerCase();
+    if (!hay || tokens.size === 0) return 0;
+    let hits = 0;
+    for (const token of tokens) {
+        if (hay.includes(token)) hits++;
+    }
+    return hits;
+}
+
+function safeParseJson(raw: string): any | null {
+    try {
+        return JSON.parse(raw);
+    } catch {
+        return null;
+    }
+}
+
+function compactJson(value: any, maxLen: number): string {
+    const text = typeof value === 'string' ? value : JSON.stringify(value);
+    return text.length > maxLen ? `${text.slice(0, maxLen)}...` : text;
+}
+
+function normalizeLabel(input: string): string {
+    return (input || '').toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+}
+
+function similarity(a: string, b: string): number {
+    const tokensA = new Set((a || '').toLowerCase().split(/\s+/).filter(Boolean));
+    const tokensB = new Set((b || '').toLowerCase().split(/\s+/).filter(Boolean));
+    if (tokensA.size === 0 && tokensB.size === 0) return 0;
+    const intersection = [...tokensA].filter(x => tokensB.has(x)).length;
+    const union = new Set([...tokensA, ...tokensB]).size;
+    return union === 0 ? 0 : intersection / union;
+}
+
+function stripTagBlock(input: string, tagName: string): string {
+    const pattern = new RegExp(`<${tagName}>[\\s\\S]*?<\\/${tagName}>`, 'gi');
+    return input.replace(pattern, '');
+}
+
+function stripSensitiveContextTags(input: string): string {
+    let sanitized = input;
+    sanitized = stripTagBlock(sanitized, 'key_facts');
+    sanitized = stripTagBlock(sanitized, 'job_description');
+    sanitized = stripTagBlock(sanitized, 'company_context');
+    return sanitized;
+}
+
+function selectRelevantResumeContext(
+    resumeRaw: string,
+    question: string,
+    recentQAPairs: Array<{ question: string; answer: string; exampleIds?: string[] }>
+): { keyFactsBlock: string; selectedExamples: string[]; selectedExampleIds: string[]; previouslyUsedExamples: string[]; isLowDiversityPool: boolean } {
+    const parsed = safeParseJson(resumeRaw);
+    if (!parsed || typeof parsed !== 'object') {
+        return {
+            keyFactsBlock: resumeRaw.length > 1500 ? `${resumeRaw.slice(0, 1500)}...` : resumeRaw,
+            selectedExamples: [],
+            selectedExampleIds: [],
+            previouslyUsedExamples: [],
+            isLowDiversityPool: true
+        };
+    }
+
+    const qTokens = new Set(tokenize(question));
+    const recentAnswerText = (recentQAPairs || []).map(pair => pair.answer || '').join(' ');
+    const recentExampleIds = new Set(
+        (recentQAPairs || [])
+            .flatMap(p => p.exampleIds || [])
+            .map(id => (id || '').toLowerCase())
+    );
+    const lastTurnExampleIds = new Set(
+        (recentQAPairs || [])
+            .slice(-1)
+            .flatMap(p => p.exampleIds || [])
+            .map(id => (id || '').toLowerCase())
+    );
+
+    const identity = parsed.identity || {};
+    const skills: string[] = Array.isArray(parsed.skills) ? parsed.skills : [];
+    const experience: any[] = Array.isArray(parsed.experience) ? parsed.experience : [];
+    const projects: any[] = Array.isArray(parsed.projects) ? parsed.projects : [];
+
+    const skillCandidates = skills.map(skill => ({
+        skill,
+        score: countTokenHits(skill, qTokens)
+    }));
+    skillCandidates.sort((a, b) => b.score - a.score || a.skill.localeCompare(b.skill));
+
+    const relevantSkills = skillCandidates
+        .filter(item => item.score > 0)
+        .slice(0, 8)
+        .map(item => item.skill);
+    const fallbackSkills = relevantSkills.length > 0 ? [] : skills.slice(0, 6);
+
+    const examples: Array<{ label: string; text: string; score: number; used: boolean }> = [];
+
+    for (const exp of experience) {
+        const role = exp?.role || 'Role';
+        const company = exp?.company || 'Company';
+        const label = `${role} at ${company}`;
+        const normalizedLabel = normalizeLabel(label);
+        const text = compactJson(exp, 700);
+        const baseScore = countTokenHits(text, qTokens) + (/(impact|result|reduced|improved|scaled|latency|throughput)/i.test(text) ? 1 : 0);
+        const usedById = recentExampleIds.has(normalizedLabel);
+        const usedBySimilarity = similarity(label, recentAnswerText) > 0.4;
+        const used = usedById || usedBySimilarity;
+        const reusePenalty = used ? 2 : 0;
+        const strongReusePenalty = lastTurnExampleIds.has(normalizedLabel) ? 3 : 0;
+        const score = baseScore - reusePenalty - strongReusePenalty;
+        examples.push({ label, text, score, used });
+    }
+
+    for (const project of projects) {
+        const name = project?.name || project?.title || 'Project';
+        const tech = Array.isArray(project?.technologies) ? project.technologies.join(', ') : '';
+        const label = tech ? `${name} (${tech})` : name;
+        const normalizedLabel = normalizeLabel(label);
+        const text = compactJson(project, 700);
+        const baseScore = countTokenHits(text, qTokens) + (/(built|designed|implemented|optimized|launched)/i.test(text) ? 1 : 0);
+        const usedById = recentExampleIds.has(normalizedLabel);
+        const usedBySimilarity = similarity(label, recentAnswerText) > 0.4;
+        const used = usedById || usedBySimilarity;
+        const reusePenalty = used ? 2 : 0;
+        const strongReusePenalty = lastTurnExampleIds.has(normalizedLabel) ? 3 : 0;
+        const score = baseScore - reusePenalty - strongReusePenalty;
+        examples.push({ label, text, score, used });
+    }
+
+    examples.sort((a, b) => {
+        return b.score - a.score;
+    });
+
+    const candidatePool = examples.slice(0, 4);
+    candidatePool.sort((a, b) => {
+        return (b.score + Math.random() * 0.5) - (a.score + Math.random() * 0.5);
+    });
+
+    const isLowDiversityPool = candidatePool.length <= 2;
+    const selected = candidatePool.slice(0, 2);
+    const selectedExamples = selected.map(item => item.label);
+    const selectedExampleIds = selected.map(item => normalizeLabel(item.label));
+    const previouslyUsedExamples = examples.filter(item => item.used).slice(0, 4).map(item => item.label);
+
+    console.log('[DEBUG] SelectedExamples:', selectedExampleIds);
+    console.log('[DEBUG] CandidatePool:', candidatePool.map(e => e.label));
+
+    const isIdentityRelevantQuestion = /(introduce yourself|tell me about yourself|about yourself|your background|background|walk me through your resume|who are you|brief intro|introduction)/i.test(question);
+
+    const keyFactLines: string[] = [];
+    if (isIdentityRelevantQuestion && (identity?.name || identity?.summary)) {
+        keyFactLines.push(`Identity: ${JSON.stringify({
+            name: identity?.name || '',
+            summary: identity?.summary || ''
+        })}`);
+    }
+
+    const skillsToUse = [...relevantSkills, ...fallbackSkills].slice(0, 8);
+    if (skillsToUse.length > 0) {
+        keyFactLines.push(`Relevant Skills: ${skillsToUse.join(', ')}`);
+    }
+
+    if (selected.length > 0) {
+        const rendered = selected.map((item, idx) => `${idx + 1}. ${item.label}\n   ${item.text}`).join('\n');
+        keyFactLines.push(`Relevant Examples:\n${rendered}`);
+    }
+
+    return {
+        keyFactsBlock: keyFactLines.join('\n\n'),
+        selectedExamples,
+        selectedExampleIds,
+        previouslyUsedExamples,
+        isLowDiversityPool
+    };
+}
+
 export interface WhatToAnswerRequest {
     latestQuestion: string;
     transcriptWindow?: string;
@@ -11,7 +205,7 @@ export interface WhatToAnswerRequest {
     lastAnswer?: string | null;
     previousQuestion?: string | null;
     previousAnswer?: string | null;
-    recentQAPairs?: Array<{ question: string; answer: string }>;
+    recentQAPairs?: Array<{ question: string; answer: string; exampleIds?: string[] }>;
     isFollowUp?: boolean;
     followUpFocus?: string | null;
     relatedToPrevious?: boolean;
@@ -21,6 +215,7 @@ export interface WhatToAnswerRequest {
     resume?: string | null;
     jobDescription?: string | null;
     companyContext?: string | null;
+    shouldUsePersona?: boolean;
     personaEnabled?: boolean;
     enforceContextAnchors?: boolean;
     contextRetry?: boolean;
@@ -28,6 +223,8 @@ export interface WhatToAnswerRequest {
 
 export class WhatToAnswerLLM {
     private llmHelper: LLMHelper;
+    private lastDiversityTone: 'confident' | 'reflective' | 'concise' | null = null;
+    private lastDiversityLineCount: number | null = null;
 
     constructor(llmHelper: LLMHelper) {
         this.llmHelper = llmHelper;
@@ -50,14 +247,24 @@ export class WhatToAnswerLLM {
             if (!latestQuestion) {
                 throw new Error('Missing latestQuestion for WhatToAnswerLLM.generateStream');
             }
+            console.log('[DEBUG] Question:', latestQuestion);
 
             let contextParts: string[] = [];
+            const variationSeed = Math.random();
 
             const transcriptSummary = (request.transcriptWindow || '').trim();
-            const resume = (request.resume || '').trim();
-            const jobDescription = (request.jobDescription || '').trim();
-            const companyContext = (request.companyContext || '').trim();
-            const personaEnabled = !!request.personaEnabled;
+            let resume: string | null = (request.resume || '').trim() || null;
+            let jobDescription: string | null = (request.jobDescription || '').trim() || null;
+            let companyContext: string | null = (request.companyContext || '').trim() || null;
+            const shouldUsePersona = !!request.shouldUsePersona;
+
+            // Pre-build sanitization: hard-null all persona-bearing sources for non-premium path.
+            if (!shouldUsePersona) {
+                resume = null;
+                jobDescription = null;
+                companyContext = null;
+            }
+
             const deterministicMode = request.deterministicMode || 'answer';
             const intent = (request.intent || request.intentResult?.intent || 'general').trim();
             const isCoding = !!request.isCoding || intent === 'coding';
@@ -69,6 +276,52 @@ export class WhatToAnswerLLM {
             const questionLower = latestQuestion.toLowerCase();
             const isCodeHintRequest = intent === 'coding' && isCoding && /(how to solve|how do i solve|how do we solve|hint|nudge|guide me|stuck|without (full )?code|approach only)/.test(questionLower);
             const isBrainstormRequest = !isCodeHintRequest && (isCoding || deterministicMode === 'system_design') && /(\bapproach\b|\bideas\b|how would you solve|\bdesign\b)/.test(questionLower);
+            const isFollowUp = !!request.isFollowUp;
+            const isBehavioralQuestion = intent === 'behavioral' || deterministicMode === 'behavioral';
+            const isCompanyQuestion = !isCoding && /(company|culture|mission|values|why (this|our) company|why us|team|organization|job description|jd|about the company|role fit|position)/.test(questionLower);
+
+            const isSimpleQuestion =
+                !isBehavioralQuestion &&
+                !isCoding &&
+                !isCompanyQuestion &&
+                questionLower.split(/\s+/).filter(Boolean).length <= 7 &&
+                !/(explain|describe|walk me through|trade\s*offs?|deep|details?)/.test(questionLower);
+
+            const lineCandidates = isBehavioralQuestion
+                ? [4, 5]
+                : isSimpleQuestion
+                    ? [2, 3]
+                    : [2, 3, 4, 5];
+
+            const tones: Array<'confident' | 'reflective' | 'concise'> = ['confident', 'reflective', 'concise'];
+            let targetLineCount = lineCandidates[Math.floor(Math.random() * lineCandidates.length)];
+            let selectedTone = tones[Math.floor(Math.random() * tones.length)];
+
+            // Avoid repeating the same tone consecutively (max 3 rerolls).
+            if (this.lastDiversityTone && selectedTone === this.lastDiversityTone) {
+                for (let i = 0; i < 3; i++) {
+                    selectedTone = tones[Math.floor(Math.random() * tones.length)];
+                    if (selectedTone !== this.lastDiversityTone) break;
+                }
+            }
+
+            this.lastDiversityTone = selectedTone;
+            this.lastDiversityLineCount = targetLineCount;
+
+            const includeResumeContext = shouldUsePersona && isBehavioralQuestion && !!resume;
+            const includeJDContext = shouldUsePersona && !isCoding && !!jobDescription && (isCompanyQuestion || isBehavioralQuestion);
+            const includeCompanyContext = shouldUsePersona && !isCoding && !!companyContext && isCompanyQuestion;
+
+            const activeRuleMode: 'code_hint' | 'brainstorm' | 'coding_response' | 'behavioral' | 'none' =
+                isCodeHintRequest
+                    ? 'code_hint'
+                    : isBrainstormRequest
+                        ? 'brainstorm'
+                        : (isCoding && !isCodeHintRequest && !isBrainstormRequest)
+                            ? 'coding_response'
+                            : (intent === 'behavioral' || deterministicMode === 'behavioral')
+                                ? 'behavioral'
+                                : 'none';
 
             // Build RECENT MESSAGES block (short-term memory first)
             const recentMessageLines: string[] = [];
@@ -85,50 +338,67 @@ export class WhatToAnswerLLM {
             }
 
             // Build KEY FACTS block (structured candidate data)
-            let keyFactsBlock = '';
-            if (resume) {
-                try {
-                    const parsed = JSON.parse(resume);
-                    const identity = parsed?.identity ? JSON.stringify(parsed.identity) : '';
-                    const skills = Array.isArray(parsed?.skills) ? parsed.skills.slice(0, 12).join(', ') : '';
-                    const projects = Array.isArray(parsed?.projects)
-                        ? parsed.projects.slice(0, 4).map((p: any) => JSON.stringify(p)).join('\n')
-                        : '';
-                    const experience = Array.isArray(parsed?.experience)
-                        ? parsed.experience.slice(0, 5).map((e: any) => JSON.stringify(e)).join('\n')
-                        : '';
-
-                    const keyFactParts = [
-                        identity ? `Identity: ${identity}` : '',
-                        skills ? `Skills: ${skills}` : '',
-                        experience ? `Experience:\n${experience}` : '',
-                        projects ? `Projects:\n${projects}` : '',
-                    ].filter(Boolean);
-
-                    keyFactsBlock = keyFactParts.join('\n\n');
-                } catch {
-                    keyFactsBlock = resume;
-                }
+            let keyFactsBlock: string | null = null;
+            let selectedExamples: string[] = [];
+            let selectedExampleIds: string[] = [];
+            let previouslyUsedExamples: string[] = [];
+            let isLowDiversityPool = false;
+            if (includeResumeContext) {
+                const selection = selectRelevantResumeContext(resume || '', latestQuestion, request.recentQAPairs || []);
+                keyFactsBlock = selection.keyFactsBlock;
+                selectedExamples = selection.selectedExamples;
+                selectedExampleIds = selection.selectedExampleIds;
+                previouslyUsedExamples = selection.previouslyUsedExamples;
+                isLowDiversityPool = selection.isLowDiversityPool;
+                console.log('[DEBUG] SelectedExampleIDs:', selectedExampleIds.length > 0 ? selectedExampleIds.join(', ') : '[none]');
             }
 
-            let jdBlock = '';
-            if (jobDescription) {
+            let jdBlock: string | null = null;
+            if (includeJDContext && jobDescription) {
                 try {
                     const parsed = JSON.parse(jobDescription);
-                    jdBlock = JSON.stringify(parsed);
+                    const slicedJD = isBehavioralQuestion
+                        ? {
+                            title: parsed?.title,
+                            company: parsed?.company,
+                            level: parsed?.level,
+                            keywords: Array.isArray(parsed?.keywords) ? parsed.keywords.slice(0, 3) : []
+                        }
+                        : {
+                            title: parsed?.title,
+                            company: parsed?.company,
+                            level: parsed?.level,
+                            requirements: Array.isArray(parsed?.requirements) ? parsed.requirements.slice(0, 6) : [],
+                            technologies: Array.isArray(parsed?.technologies) ? parsed.technologies.slice(0, 8) : [],
+                            keywords: Array.isArray(parsed?.keywords) ? parsed.keywords.slice(0, 8) : []
+                        };
+                    jdBlock = JSON.stringify(slicedJD);
                 } catch {
-                    jdBlock = jobDescription;
+                    jdBlock = jobDescription.slice(0, 1500);
                 }
             }
 
-            let companyBlock = '';
-            if (companyContext) {
+            let companyBlock: string | null = null;
+            if (includeCompanyContext && companyContext) {
                 try {
                     const parsed = JSON.parse(companyContext);
-                    companyBlock = JSON.stringify(parsed);
+                    const slicedCompany = {
+                        company: parsed?.company,
+                        role: parsed?.role,
+                        cultureMappings: Array.isArray(parsed?.cultureMappings) ? parsed.cultureMappings.slice(0, 6) : [],
+                        negotiationRange: parsed?.negotiationRange || null
+                    };
+                    companyBlock = JSON.stringify(slicedCompany);
                 } catch {
-                    companyBlock = companyContext;
+                    companyBlock = companyContext.slice(0, 1200);
                 }
+            }
+
+            // Pre-build sanitization: force all derived persona payloads to null when persona gate is off.
+            if (!shouldUsePersona) {
+                keyFactsBlock = null;
+                jdBlock = null;
+                companyBlock = null;
             }
 
             contextParts.push(`<assistant_operating_mode>
@@ -144,31 +414,92 @@ Never request full conversation history.
 Never repeat information unnecessarily.
 </assistant_operating_mode>`);
 
+            contextParts.push(`<diversity>
+seed: ${variationSeed}
+</diversity>`);
+
             if (transcriptSummary) {
                 contextParts.push(`<summary>
-${transcriptSummary.slice(0, 4000)}
+${transcriptSummary.slice(0, 1800)}
 </summary>`);
             }
 
             if (keyFactsBlock) {
                 contextParts.push(`<key_facts>
-${keyFactsBlock.slice(0, 5000)}
+${keyFactsBlock.slice(0, 1800)}
 </key_facts>`);
             }
 
-            contextParts.push(`<job_description>
-${jdBlock ? jdBlock.slice(0, 5000) : '[JOB DESCRIPTION CONTEXT UNAVAILABLE]'}
+            if (jdBlock) {
+                contextParts.push(`<job_description>
+${jdBlock.slice(0, 1500)}
 </job_description>`);
+            }
 
-            contextParts.push(`<company_context>
-${companyBlock ? companyBlock.slice(0, 4000) : '[COMPANY CONTEXT UNAVAILABLE]'}
+            if (companyBlock) {
+                contextParts.push(`<company_context>
+${companyBlock.slice(0, 1200)}
 </company_context>`);
+            }
 
             if (recentMessageLines.length > 0) {
                 contextParts.push(`<recent_messages>
-${recentMessageLines.join('\n').slice(0, 5000)}
+${recentMessageLines.join('\n').slice(0, 2000)}
 </recent_messages>`);
             }
+
+            if (includeResumeContext && previouslyUsedExamples.length > 0) {
+                contextParts.push(`<example_rotation_rules>
+Previously used examples/projects (avoid reusing unless absolutely necessary):
+${previouslyUsedExamples.join(', ')}
+
+Prefer these fresh examples first:
+${selectedExamples.length > 0 ? selectedExamples.join(', ') : 'Use a new example not used recently.'}
+</example_rotation_rules>`);
+            }
+
+                        contextParts.push(`<example_usage_rules>
+- Use a DIFFERENT project/example for each new question
+- Do NOT reuse previously used examples unless explicitly asked
+</example_usage_rules>`);
+
+                        contextParts.push(`<response_variation_rules>
+- Do NOT repeat the same answer structure across questions
+- Vary how answers start
+- Sometimes start with:
+    - experience
+    - result
+    - impact
+</response_variation_rules>`);
+
+                        contextParts.push(`<response_diversity_rules>
+- Vary answer length between 2 and 5 lines.
+- Target line count for this response: ${targetLineCount}.
+- Use this tone for this response: ${selectedTone}.
+- If reusing the same project/example, highlight a DIFFERENT aspect than before (e.g., architecture, debugging, collaboration, leadership, performance impact, trade-offs).
+</response_diversity_rules>`);
+
+                        contextParts.push(`<anti_repetition_rules>
+* Do NOT reuse the same example across consecutive answers unless absolutely necessary
+* If reusing, change perspective (architecture, debugging, impact, trade-offs)
+* Avoid repeating the same sentence structure
+</anti_repetition_rules>`);
+
+                                                contextParts.push(`<structure_variation_rules>
+* Do NOT start answers the same way across turns
+* Vary opening style:
+    * sometimes start with outcome
+    * sometimes with challenge
+    * sometimes with action
+* Avoid repeating "I worked on..." repeatedly
+</structure_variation_rules>`);
+
+                        if (includeResumeContext && isLowDiversityPool) {
+                                contextParts.push(`<fallback_diversity_rules>
+Candidate pool is small for this question, so example reuse is allowed.
+If reusing, force a different angle than prior turns (architecture, debugging, impact, trade-offs, or collaboration).
+</fallback_diversity_rules>`);
+                        }
 
             contextParts.push(`<focus_question>
 LATEST INTERVIEWER QUESTION: ${latestQuestion}
@@ -177,13 +508,36 @@ LATEST INTERVIEWER QUESTION: ${latestQuestion}
 Answer ONLY the latest interviewer question above.
 Avoid repeating your immediately previous answer wording.
 Never return a generic answer.
-Every answer must include at least one concrete anchor from available context:
+${shouldUsePersona
+? `Every answer must include at least one concrete anchor from available context:
 - a real project example, or
 - a specific technology used, or
 - a real scenario from the candidate's experience.
 
-If the question is about skills, strengths, or challenges, tie it directly to a concrete project from KEY FACTS.
+If the question is about skills, strengths, or challenges, tie it directly to a concrete project from KEY FACTS.`
+: `Do not use or infer personal resume details. Provide a generic but interview-ready answer.`}
+
+Context policy:
+- Behavioral: use selected resume context and optional JD only.
+- Company-related: use JD and company context only.
+- Coding: do not use resume, JD, or company context.
 </critical_rules>`);
+
+            if (!shouldUsePersona) {
+                contextParts.push(`<generic_mode_only>
+Premium persona context is disabled for this request.
+Use generic interview guidance only.
+Do not use resume, JD, or company-specific memory.
+</generic_mode_only>`);
+            }
+
+            if (!isFollowUp) {
+                contextParts.push(`<fresh_question_rule>
+If the question is new, ignore previous answer context.
+Generate a completely new response.
+</fresh_question_rule>`);
+            }
+
             contextParts.push(`<deterministic_mode>
 ACTIVE RESPONSE MODE: ${deterministicMode}
 </deterministic_mode>`);
@@ -220,7 +574,18 @@ Sound like a confident candidate speaking live, not a template.
 </ux_behavioral_conversation_rules>`);
             }
 
-            if (isCodeHintRequest) {
+            if (isBehavioralQuestion && jdBlock) {
+                contextParts.push(`<behavioral_jd_usage_rules>
+For behavioral answers, use JD only lightly for alignment.
+Do NOT structure the answer based on JD bullets.
+</behavioral_jd_usage_rules>`);
+            }
+
+            contextParts.push(`<active_response_rule_mode>
+MODE: ${activeRuleMode}
+</active_response_rule_mode>`);
+
+            if (activeRuleMode === 'code_hint') {
                 contextParts.push(`<code_hint_rules>
 When providing a hint:
 - Do NOT give full code
@@ -230,9 +595,7 @@ When providing a hint:
 - Keep it short
 - Guide step-by-step
 </code_hint_rules>`);
-            }
-
-            if (isBrainstormRequest) {
+            } else if (activeRuleMode === 'brainstorm') {
                 contextParts.push(`<brainstorm_rules>
 When brainstorming:
 1) Start with brute force
@@ -242,9 +605,7 @@ When brainstorming:
 
 Keep it concise.
 </brainstorm_rules>`);
-            }
-
-            if (isCoding && !isCodeHintRequest && !isBrainstormRequest) {
+            } else if (activeRuleMode === 'coding_response') {
                 contextParts.push(`<coding_response_rules>
 When IS_CODING is true, use this exact order:
 1) One short line: direct approach summary.
@@ -254,17 +615,21 @@ Always format code inside a proper code block.
 Keep explanation extremely brief before code.
 Do not ask follow-up questions. Keep naming clear and production-oriented.
 </coding_response_rules>`);
-            }
-
-            if (intent === 'behavioral') {
-                contextParts.push(`<behavioral_intent_rules>
+            } else if (activeRuleMode === 'behavioral') {
+                contextParts.push(`<behavioral_rules>
 When INTENT is behavioral:
 1) Start with a direct answer.
 2) Add one short real example from experience.
 3) End with a strong conclusion sentence.
 
 Keep it natural, confident, and specific.
-</behavioral_intent_rules>`);
+
+If deterministic mode is behavioral, use STAR with 4 short parts in order:
+Situation:
+Task:
+Action:
+Result:
+</behavioral_rules>`);
             }
             if (!isBrainstormRequest) {
                 contextParts.push(`<context_default_rules>
@@ -272,18 +637,6 @@ If intent is not coding or behavioral:
 - Give a short direct answer (3–4 lines)
 - Do not over-explain
 </context_default_rules>`);
-            }
-
-            if (deterministicMode === 'behavioral') {
-                contextParts.push(`<behavioral_answer_rules>
-Use explicit STAR format with 4 short parts in order:
-Situation:
-Task:
-Action:
-Result:
-
-Keep each part concise and grounded in resume/JD/company context.
-</behavioral_answer_rules>`);
             }
 
             if (deterministicMode === 'system_design') {
@@ -300,7 +653,7 @@ Prioritize practical design aligned with JD/company context.
 
             if (request.enforceContextAnchors) {
                 contextParts.push(`<context_enforcement>
-You MUST reference at least one resume anchor and one JD/company anchor when available.
+Reference only the context types provided above for this question.
 If context is missing, state that briefly and continue with the best grounded answer.
 </context_enforcement>`);
             }
@@ -316,7 +669,7 @@ If this is a follow-up question, continue from previous context instead of resta
 You are a high-performing candidate interviewing at a top tech company.
 Answer as if you are speaking live in the interview.
 Be confident and direct; no filler.
-Keep the answer under 4-5 lines.
+Keep the answer between 2 and 5 lines (target: ${targetLineCount}).
 
 ${isBrainstormRequest ? '' : 'Start with a direct answer.'}
 Include one real example, project, or experience.
@@ -335,7 +688,9 @@ Do not use vague self-descriptions like:
 - "I like challenges"
 
 If your answer sounds generic, rewrite it with a concrete example before responding.
-If persona is enabled, strongly prioritize using the candidate's real experience.
+${shouldUsePersona
+? 'Strongly prioritize using the candidate\'s real experience from provided resume context.'
+: 'Do not use candidate-specific persona context; keep the response generic and professional.'}
 Do not ask any clarification or follow-up questions.
 Output only the spoken answer in natural English.
 Keep it concise and interview-ready.
@@ -371,14 +726,14 @@ If any check fails, rewrite once and output only the improved final answer.
                 .filter((x): x is string => !!x)
                 .join('\n');
 
-            if (previousQuestion || previousAnswer) {
+            if (isFollowUp && (previousQuestion || previousAnswer)) {
                 contextParts.push(`<conversation_memory>
 PREVIOUS QUESTION: ${previousQuestion || 'N/A'}
 PREVIOUS ANSWER: ${previousAnswer || 'N/A'}
 </conversation_memory>`);
             }
 
-            if (recentPairs) {
+            if (isFollowUp && recentPairs) {
                 contextParts.push(`<recent_qa_pairs>
 ${recentPairs}
 </recent_qa_pairs>`);
@@ -416,7 +771,7 @@ ANSWER SHAPE: ${request.intentResult.answerShape}
 </intent_and_shape>`);
             }
 
-            if (request.lastAnswer && request.lastAnswer.trim().length > 0) {
+            if (isFollowUp && request.lastAnswer && request.lastAnswer.trim().length > 0) {
                 const prior = request.lastAnswer.trim();
                 const clipped = prior.length > 220 ? `${prior.slice(0, 220)}...` : prior;
                 contextParts.push(`<anti_repetition>
@@ -424,18 +779,53 @@ LAST ANSWER (do not repeat verbatim): ${clipped}
 </anti_repetition>`);
             }
 
-            const extraContext = contextParts.join('\n\n');
+            const uniqueContextParts: string[] = [];
+            const seenContextParts = new Set<string>();
+            for (const block of contextParts) {
+                if (seenContextParts.has(block)) continue;
+                seenContextParts.add(block);
+                uniqueContextParts.push(block);
+            }
+
+            if (uniqueContextParts.length !== contextParts.length) {
+                console.log(`[DEBUG] Prompt dedupe removed ${contextParts.length - uniqueContextParts.length} duplicate blocks.`);
+            }
+
+            const extraContext = uniqueContextParts.join('\n\n');
             const fullMessage = extraContext;
+            const sanitizedFullMessage = shouldUsePersona
+                ? fullMessage
+                : stripSensitiveContextTags(fullMessage);
+
+            console.log(`[DEBUG] Mode=${activeRuleMode}, isFollowUp=${isFollowUp}, finalPromptLength=${fullMessage.length}`);
 
             let prompt = UNIVERSAL_WHAT_TO_ANSWER_PROMPT;
-            if (resume && personaEnabled) {
-                prompt += `\nUse this experience if relevant:\n${resume}`;
+            if (includeResumeContext && keyFactsBlock) {
+                prompt += `\nUse this experience if relevant:\n${keyFactsBlock}`;
+            }
+
+            // Hard safety check to prevent partial persona leaks for non-premium requests.
+            if (!shouldUsePersona) {
+                const forbiddenTags = [
+                    '<key_facts>',
+                    '<job_description>',
+                    '<company_context>',
+                    '<example_rotation_rules>',
+                    '<behavioral_jd_usage_rules>'
+                ];
+                const forbiddenContent = [keyFactsBlock, jdBlock, companyBlock].filter((snippet): snippet is string => !!snippet);
+                const hasForbiddenTags = forbiddenTags.some(tag => sanitizedFullMessage.includes(tag));
+                const hasForbiddenContent = forbiddenContent.some(snippet => sanitizedFullMessage.includes(snippet) || prompt.includes(snippet));
+
+                if (includeResumeContext || includeJDContext || includeCompanyContext || hasForbiddenTags || hasForbiddenContent) {
+                    throw new Error('PERSONA_GATING_ASSERTION_FAILED: Non-premium request contains persona/JD/resume context.');
+                }
             }
 
             const timeoutMs = 40000;
             const timeoutController = new AbortController();
             const timeoutHandle = setTimeout(() => timeoutController.abort(), timeoutMs);
-            const stream = this.llmHelper.streamChat(fullMessage, imagePaths, undefined, prompt);
+            const stream = this.llmHelper.streamChat(sanitizedFullMessage, imagePaths, undefined, prompt);
             let hasStreamed = false;
 
             const fallbackPrefix = 'Let me give a quick structured answer...';

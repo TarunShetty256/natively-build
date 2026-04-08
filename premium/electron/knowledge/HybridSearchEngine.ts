@@ -4,6 +4,7 @@ export interface RelevanceOptions {
     sourceTypes?: string[];
     jdRequiredSkills?: string[];
     categoryHintKeywords?: string[];
+    recentNodeIds?: number[];
     maxNodes?: number;
 }
 
@@ -48,13 +49,20 @@ function includesTerm(haystack: string, term: string): boolean {
     return haystack.includes(t);
 }
 
+function tokenizeQuestion(question: string): string[] {
+    return question
+        .toLowerCase()
+        .split(/[^a-z0-9]+/)
+        .filter(token => token.length > 2);
+}
+
 export async function getRelevantNodes(
     _question: string,
     nodes: ContextNode[],
     _embedFn: (text: string) => Promise<number[]>,
     options: RelevanceOptions = {}
 ): Promise<ScoredNode[]> {
-    const maxNodes = options.maxNodes ?? nodes.length;
+    const maxNodes = Math.min(5, options.maxNodes ?? 5);
     if (!nodes.length) return [];
 
     const filteredNodes = options.sourceTypes && options.sourceTypes.length > 0
@@ -71,44 +79,97 @@ export async function getRelevantNodes(
 
     const requiredSkills = options.jdRequiredSkills || [];
     const categoryHints = options.categoryHintKeywords || [];
+    const recentNodeIds = new Set(options.recentNodeIds || []);
     const questionLower = _question.toLowerCase();
+    const questionTokens = tokenizeQuestion(_question);
+
+    const prioritizeProject = questionLower.includes('project');
+    const prioritizeExperience = questionLower.includes('experience');
 
     const scored = filteredNodes.map(node => {
         const text = `${node.title || ''} ${node.text_content || ''}`.toLowerCase();
-        const baseScore = node.embedding && questionEmbedding.length
-            ? cosineSimilarity(questionEmbedding, node.embedding)
-            : 0;
+        const baseScore = questionTokens.reduce((acc, token) => {
+            return acc + (text.includes(token) ? 1.2 : 0);
+        }, 0);
 
-        let boost = 0;
+        let score = baseScore;
+
+        if (node.category === 'project') score += 2;
+        if (node.category === 'experience') score += 2;
+        if (node.category === 'skills') score += 1;
+
+        const recentlyUsed = node.id !== undefined && recentNodeIds.has(node.id);
+        if (recentlyUsed) {
+            score -= 2;
+        }
+
+        if (node.embedding && questionEmbedding.length) {
+            score += cosineSimilarity(questionEmbedding, node.embedding) * 1.5;
+        }
 
         if (requiredSkills.length > 0) {
             let matches = 0;
             for (const skill of requiredSkills) {
                 if (includesTerm(text, skill)) matches += 1;
             }
-            boost += Math.min(0.25, matches * 0.03);
+            score += Math.min(0.25, matches * 0.03);
         }
 
         if (categoryHints.length > 0) {
             for (const hint of categoryHints) {
                 if (node.category === hint) {
-                    boost += 0.15;
+                    score += 0.15;
                 } else if (hint.startsWith('jd_') && node.category.startsWith('jd_')) {
-                    boost += 0.08;
+                    score += 0.08;
                 }
             }
         }
 
-        if (questionLower.includes('salary') && node.category === 'jd_compensation') {
-            boost += 0.2;
+        if (prioritizeProject && node.category === 'project') {
+            score += 2;
         }
 
-        return { node, score: baseScore + boost };
+        if (prioritizeExperience && node.category === 'experience') {
+            score += 2;
+        }
+
+        if (questionLower.includes('salary') && node.category === 'jd_compensation') {
+            score += 0.2;
+        }
+
+        return { node, score };
     });
 
-    return scored
-        .sort((a, b) => b.score - a.score)
-        .slice(0, maxNodes);
+    let filtered = scored.filter(item => item.score > 0.5);
+
+    if (filtered.length === 0) {
+        filtered = scored.slice(0, 2);
+    }
+
+    const sorted = filtered.sort((a, b) => {
+        return (b.score + Math.random() * 0.3) - (a.score + Math.random() * 0.3);
+    });
+
+    const categoryCounts = new Map<string, number>();
+    const diversified: ScoredNode[] = [];
+    for (const item of sorted) {
+        const category = item.node.category || 'unknown';
+        const count = categoryCounts.get(category) || 0;
+        if (count >= 2) continue;
+
+        categoryCounts.set(category, count + 1);
+        diversified.push({
+            ...item,
+            node: {
+                ...item.node,
+                text_content: (item.node.text_content || '').slice(0, 1200)
+            }
+        });
+
+        if (diversified.length >= maxNodes) break;
+    }
+
+    return diversified;
 }
 
 export function formatDossierBlock(dossier: CompanyDossier | null): string {
@@ -118,8 +179,8 @@ export function formatDossierBlock(dossier: CompanyDossier | null): string {
 
 export function formatContextBlock(scoredNodes: ScoredNode[], maxNodes: number = 6): string {
     return scoredNodes
-        .slice(0, maxNodes)
-        .map(sn => sn.node.text_content)
+    .slice(0, Math.min(maxNodes, 5))
+    .map(sn => (sn.node.text_content || '').slice(0, 1200))
         .filter(Boolean)
         .join('\n');
 }
